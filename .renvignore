@@ -1,0 +1,42 @@
+# user defined
+data/
+.ipynb_checkpoints/
+analysis_4/
+analysis_5/
+analysis_6/
+archive/
+rnaseq/
+diagram/
+full_data/
+comi/
+dss_fpmtb/
+output/
+report/
+plot/
+Differential_Analysis/
+signature_gct/
+.Rproj.user/
+
+
+*.csv
+*.png
+*.svg
+*.xlsx
+*.pdf
+*.pptx
+*.docx
+*.txt
+*.tiff
+*.html
+
+*.robj
+*.RData
+*.rds
+
+# History files
+.Rhistory
+.Rapp.history
+
+# Session Data files
+.RData
+.RDataTmp
