@@ -199,6 +199,13 @@ run_msigdb <- function(tmp, ensbl.col="gene",
 # environment(as_tidy_cor) <- asNamespace("rstatix")
 # assignInNamespace("as_tidy_cor",as_tidy_cor,"rstatix")
 
+r_squared <- function(y_val, y_pred) {
+  ss_res <- sum((y_val - y_pred)^2)
+  ss_tot <- sum((y_val - mean(y_val))^2)
+  1 - (ss_res / ss_tot)
+}
+
+
 ####### gene signature ########
 
 ## Loading gmt genesets

@@ -1,0 +1,990 @@
+---
+title: "Association between genomic/clinical data and drug response"
+description: "catboost between 101 features and 170 combinations & statistial associations"
+Date: "3 jan 2025"
+output: 
+  html_notebook:
+    theme: united
+    toc: yes
+    toc_float: yes
+---
+
+# analysis
+
+preprocessing [R] -> training and CV model [python] -> evaluating models [R - not replicable with github] -> plots
+- python code "src/analysis/3.catboost_py.ipynb"
+- saved trained models can be found in "output/rds/cv_results_all170.pkl"
+
+# Loading libraries
+```{r include=FALSE}
+library(rstatix)
+library(data.table)
+library(tidyverse)
+library(reshape2)
+library(matrixStats)
+library(ggpubr)
+library(ggforce)
+
+library(ComplexHeatmap)
+library(circlize)
+
+set.seed(13)
+
+source("src/function/colour.R")
+source("src/function/loading_data.R")
+listofnames <- init_drugnames()
+```
+
+# association between features and drug response
+
+- preprocessing features consistently
+  - continuous variables
+    - "ALT", "AST", "creatinine", "wbcCount", "plateletCount" (are right skewed): log transformed + z-score
+    - other labs + percentage blood cells + age: z-score
+    - binary categorical: mutation, cytogenetics, surface antigens, gender
+    - multiple categories: FAB, ELN2022, Disease.status: one-
+
+- only preprocessing right skewed continuous variables, not scaling
+
+```{r}
+sampleinfo_full <- read.csv("data/oshu/clinical_summary.csv") [1:596,]
+
+sampleinfo <- read.csv("data/oshu/sampleinfo_dss.csv")[1:596,] 
+
+cells <- data.frame(sampleinfo_full[,c(54, 56:57,59:61,63:69,71)], row.names = sampleinfo_full$Sample_ID)
+log_vars <- c("ALT", "AST", "creatinine", "wbcCount", "plateletCount") # usually right skewed
+log_vars <- c(log_vars, "percentBasophilsPB", "percentEosinophilsPB") # rare population and right skewed with high outliers clinical relevance often lies in fold-change or elevation
+cells[log_vars] <- log1p(cells[log_vars])
+
+prior <- data.frame(sampleinfo[c(23,24,26,28)], row.names = sampleinfo$Sample_ID)
+
+mutation <- data.frame(sampleinfo[,c(32:55,58:103)], row.names = sampleinfo$Sample_ID)
+mutation <- mutation[,colSums(mutation, na.rm = T) >= 10] # removed columns with < 10 non positive
+
+cyto <- read.csv("data/oshu/clinical_cyto.csv", check.names = F)[1:596,] 
+rownames(cyto) <- cyto$Sample_ID
+cyto <- cyto[sampleinfo$Sample_ID ,6:17] 
+cyto <- cyto[,colSums(cyto, na.rm = T) >= 10]
+
+immuno <- read.csv("data/oshu/clinical_immuno.csv")[1:596,]
+immuno <- data.frame(immuno[,4:ncol(immuno)], row.names = immuno$Sample_ID) %>%
+  mutate_all(.funs = ~ ifelse(.x=="-", F, ifelse(is.na(.x), NA, T)) )
+immuno <- immuno[,colSums(immuno, na.rm = T) >= 10] # removed columns with < 10 non positive
+```
+
+
+```{r}
+## risk, FAB and diagnosis, age, gender
+# unknown is removed
+df_all <- data.frame(Age = sampleinfo$Age,
+                     timepoint = sampleinfo_full$timeOfSampleCollectionRelativeToInclusion,
+                     FAB_subtype = sampleinfo$FAB_subtype, 
+                     ELN2022 = sampleinfo$ELN2022, 
+                     Gender = sampleinfo_full$gender,
+                     DvsT = sampleinfo$Disease.status,
+                     row.names = sampleinfo$Sample_ID) %>%
+  mutate(
+    FAB_subtype = ifelse(FAB_subtype=="M0/M1", "M0", FAB_subtype),
+    DvsT = case_when(DvsT %in% c("Relapse","Residual") ~ "RR", .default = DvsT),
+    isMale = ifelse(Gender=="Male", TRUE, ifelse(Gender=="Female", FALSE, NA))
+    ) %>%
+  mutate(
+    FAB_subtype = factor(FAB_subtype, levels = c("M0", "M1", "M2", "M3", "M4", "M5", "M7")),
+    DvsT = factor(DvsT, levels=c("Diagnosis", "RR", "Remission", "Unknown"), ordered = F)
+    ) %>%
+  select(-Gender) 
+```
+
+## saving putting all in the same df; exporting to run in python
+```{r}
+X_all_categorical <- bind_cols(df_all[3:ncol(df_all)], prior, mutation, immuno, cyto) # 86
+
+X_all_numerical <- bind_cols(cells, df_all[1])# 15
+
+X_all <- cbind(X_all_numerical, X_all_categorical) # 101
+
+combi.m <- data.frame(sampleinfo[,155:324], row.names = sampleinfo$Sample_ID)
+combi.m <- combi.m[,colSums(!is.na(combi.m), na.rm = T) >= 20] # range (23-523)
+Y_all <- combi.m # 170
+
+df <- cbind(sampleinfo_full[c("Sample_ID", "patientId")], X_all, Y_all)
+
+# df %>% write.csv("output/supp/ML/preprocessed_df.csv", row.names = F)
+```
+
+## verifying if the features are informative 
+
+### checking with features
+```{r}
+#### categorical
+colSums(!is.na(prior))
+colSums(!is.na(cyto))
+colSums(!is.na(mutation))
+colSums(!is.na(immuno))
+colSums(!is.na(df_all))
+
+colSums(prior, na.rm = T)
+colSums(cyto, na.rm = T)
+colSums(mutation, na.rm = T)
+colSums(immuno, na.rm = T)
+# colSums(df_all, na.rm = T)
+
+#### numerical
+colSums(!is.na(cells))
+
+quantile(colSums(!is.na(combi.m)))
+hist((colSums(!is.na(combi.m))))
+```
+
+### helper function
+
+- categorical
+  - missing_rate: proportion of NA values ( < 0.5)
+  - entropy: diversity of categories ( > 0.5)
+  - n_levels: number of unique categories 
+  - dominant_prop: proportion of the most frequent category ( < 0.95)
+
+- numerical
+  - Missing rate: How much data is missing ( < 0.5)
+  - Skewness: Whether the distribution is symmetric or distorted ( < +-2)
+  - Outlier proportion: How many values lie far outside the typical range ( < 0.05)
+  - Spread: A proxy for entropy—features with very narrow range may be uninformative (not low)
+
+```{r}
+# missing_rate: proportion of NA values
+# entropy: diversity of categories
+# n_levels: number of unique categories
+# dominant_prop: proportion of the most frequent category
+score_categorical_features <- function(df, threshold_missing = 0.5, threshold_entropy = 0.5, threshold_dominant_prop = 0.95) {
+  
+  # Helper: Shannon's entropy function
+  calc_entropy <- function(x) {
+    freq <- table(x) / length(x)
+    -sum(freq * log2(freq + 1e-9))  # add small value to avoid log(0)
+  }
+  
+  # Identify categorical columns (factor or character)
+  cat_cols <- names(df)[sapply(df, function(col) is.logical(col) || is.factor(col) || is.character(col))]
+  
+  # Score each categorical feature
+  scores <- lapply(cat_cols, function(col_name) {
+    col <- df[[col_name]]
+    missing_rate <- mean(is.na(col))
+    entropy <- calc_entropy(col[!is.na(col)])
+    n_levels <- length(unique(col[!is.na(col)]))
+    dominant_prop <- max(table(col[!is.na(col)]) / length(col[!is.na(col)]))
+    
+    data.frame(
+      feature = col_name,
+      missing_rate = missing_rate,
+      entropy = entropy,
+      n_levels = n_levels,
+      dominant_prop = dominant_prop,
+      keep = (missing_rate < threshold_missing) & (entropy > threshold_entropy) & (dominant_prop < threshold_dominant_prop)
+    )
+  }) %>% bind_rows()
+  
+  return(scores)
+}
+
+# Missing rate: How much data is missing
+# Skewness: Whether the distribution is symmetric or distorted
+# Outlier proportion: How many values lie far outside the typical range
+# Spread: A proxy for entropy—features with very narrow range may be uninformative
+score_numerical_features <- function(df, threshold_missing = 0.5, threshold_skew = 2, threshold_outlier_prop = 0.05) {
+  library(dplyr)
+  
+  # Identify numeric columns
+  num_cols <- names(df)[sapply(df, is.numeric)]
+  
+  # Score each numeric feature
+  scores <- lapply(num_cols, function(col_name) {
+    col <- df[[col_name]]
+    col_clean <- col[!is.na(col)]
+    
+    missing_rate <- mean(is.na(col))
+    skewness <- e1071::skewness(col_clean)
+    
+    # Outlier detection using 1.5 * IQR rule
+    qnt <- quantile(col_clean, probs = c(0.25, 0.75))
+    iqr <- IQR(col_clean)
+    lower <- qnt[1] - 1.5 * iqr
+    upper <- qnt[2] + 1.5 * iqr
+    outlier_prop <- mean(col_clean < lower | col_clean > upper)
+    
+    # Spread proxy: log of range
+    spread <- log1p(max(col_clean) - min(col_clean))
+    
+    keep <- (missing_rate < threshold_missing) & 
+            (abs(skewness) < threshold_skew) & 
+            (outlier_prop < threshold_outlier_prop)
+    
+    data.frame(
+      feature = col_name,
+      missing_rate = missing_rate,
+      skewness = skewness,
+      outlier_prop = outlier_prop,
+      spread = spread,
+      keep = keep
+    )
+  }) %>% bind_rows()
+  
+  return(scores)
+}
+
+```
+
+```{r}
+score_categorical_features(X_all_categorical) %>% DT::datatable()
+score_numerical_features(X_all_numerical) %>% DT::datatable()
+```
+
+
+# running catboost + shap in python
+- refer to src/analysis/3.catboost_py.ipynb
+
+- SHAP values are in the same units as the model output (e.g., DSS score) 
+  - global SHAP values for continuous variables and categorical variables should be looked at separately
+  - comparing Global SHAP (e.g., mean absolute SHAP per feature) summarizes importance across the dataset
+
+- running with default model
+  - 170 combinations
+  - 101 features - 15 numerical, 86 categorical
+  - using grouped 5-fold CV
+  - evaluate the performance of the model R^2 or RMSE to ensure that there isnt overfitting/underfitting -> affects the reliability of the SHAP values
+  
+- advantage
+  - native handling of categorical features && missingness && its default model is quite balanced in bias-variance (but non-random missingness still affects); stability with small datasets
+    
+- to consider
+  - not well tuned models (over/underfitting); black box
+  - doesnt capture interactions fully
+  - small sample size / no test set/ noise causing overestimating generalizability
+  - cross drug/model compatibility
+
+- what is exported
+  - per combination
+    - fold-wise shap values on test sets
+    - stability metrics of each feature
+    - sample level + fold-wise residuals (obs.val - pred.val)
+    - sample level + fold-wise shap values 
+
+# [not included in github] evaluation
+
+- obtain raw files by running the saved python models 
+  - "_shap_foldwise.csv"; "_residuals.csv"
+  
+```{r}
+base.dir = "output/supp/ML/diagnostics/"
+listofcombi <- read.csv("data/oshu/combi_detail.csv")[,c(1,2,4,5)] %>% unique() %>%
+  mutate(changedname = gsub("[ -]", ".", combo))
+
+topcombi <- read.csv("output/oshu_combinationindex.csv") %>% 
+  mutate(combo = Combination,
+         Combination = gsub("[ -]", ".", Combination))
+
+r_squared <- function(y_val, y_pred) {
+  ss_res <- sum((y_val - y_pred)^2)
+  ss_tot <- sum((y_val - mean(y_val))^2)
+  1 - (ss_res / ss_tot)
+}
+
+df <- read.csv("output/supp/ML/preprocessed_df.csv", check.names = F) %>%
+  rename(DiseaseStatus = DvsT)
+X_all <- df[3:103]
+categories <- data.frame(feature = colnames(X_all),
+                         type = c(rep("numeric", 15), rep("category", 86))) 
+```
+
+## tbl8: model evaluation
+
+- diagnosing the cause of instability
+  - small sample size
+  - missingness of information / noise/ outlier
+  - poor signals - lack of strong signal from a single feature
+  - the target is just all max/min out
+
+- filtering out unstable models
+  - kendall tau - directly compares pairs of data points to see if they are concordant (spearman reports pearson's of the ranks)
+    - important to also eval the p values - such that the coef isnt just randomness
+    - using 1-sided test "greater" to only look for positive corr; rsq > 0 to ensure that its better than mean
+  
+- stability determined by the no. of positive and signif tau values
+  - poor: 0-1: model is unable to consistently find a signal in the data that generalizes across different subsets.
+  - unstable: 2-3: tentative but inconsistent signal
+  - stable: 4-5
+  
+```{r}
+rawfiles = list.files(path = base.dir, pattern = ".*_residuals.csv")
+rawfiles_name <- gsub("_residuals.csv", "", rawfiles)
+
+df_list <- lapply(rawfiles, function(i) read.csv(paste0(base.dir, i)))
+names(df_list) <- rawfiles_name
+
+perf_summary_df <- rbindlist(df_list, idcol = "changedname")
+
+perf_summary_perfold <- perf_summary_df %>%
+  group_by(changedname, fold) %>%
+  summarise(
+    PearsonR = round(cor(y_true, y_pred), 5),
+    PearsonP = signif(cor.test(y_true, y_pred, method = "pearson")$p.value, 5),
+    KendallT = round(cor(y_true, y_pred, method = "kendall"), 5),
+    KendallP = signif(cor.test(y_true, y_pred, method = "kendall", exact = T, continuity = T, alternative = "greater")$p.value, 5),
+    rsq = round(r_squared(y_true, y_pred), 5),
+    n_samples_perfold = n()) %>% ungroup() %>%
+  mutate(sig_kendall = KendallP < 0.05 & rsq > 0) %>%
+  group_by(changedname) %>%
+  mutate(
+    n_samples = sum(n_samples_perfold),
+    n_sig_fold = sum(sig_kendall),
+    category = case_when( 
+      n_sig_fold >= 4 ~ "stable", 
+      n_sig_fold >= 2 ~ "unstable",
+      .default = "poor"
+      )
+    ) %>% ungroup()  %>%
+  left_join(topcombi[,c(1,5,11,12)], by=c("changedname" = "Combination")) %>%
+  dplyr::select(Combination := last_col(), everything()) %>% dplyr::select(-2)
+
+## table 8
+write.csv(perf_summary_perfold, "output/model_perf_summary_perfold.csv", row.names = F)
+
+perf_summary <- perf_summary_perfold %>%
+  select(Combination, n_samples, n_sig_fold, category, median_CI, Better_combi) %>%
+  distinct_all() 
+
+table(perf_summary$category)
+cut(perf_summary$n_samples, breaks = seq(0, 530, by=25), include.lowest = TRUE) %>% table(., perf_summary$category)
+
+write.csv(perf_summary, "output/supp/ML/model_perf_summary_df.csv", row.names = F)
+```
+
+## feature stability (gathering SHAP values)
+
+- Using SHAP values from the test folds of a 5-fold CV is a statistically sound and biologically compelling method for your goal. This is a powerful, defensible, and rigorous approach that directly addresses the core question of robustness.
+
+- entropy < 1.5
+  - Entropy ranges from 0 (perfectly stable rank) to log(N) where N is number of ranks (e.g. log₂(5) ≈ 2.32 for 5 folds).
+  
+- cv < 0.5
+  - = SD / mean of absolute SHAP values (changing SD to R's instead of np.std)
+  - implies that the SHAP values vary less than half their mean—reasonable for biological interpretation.
+
+- high mean + low sd == low CV
+
+          Better_combi
+category   FALSE TRUE
+  poor        71   56
+  stable       4   13
+  unstable     9   17
+
+```{r}
+rawfiles = list.files(path = base.dir, pattern = ".*_feature_stability.csv")
+rawfiles_name <- gsub("_feature_stability.csv", "", rawfiles)
+
+df_list <- lapply(rawfiles, function(i) read.csv(paste0(base.dir, i)))
+names(df_list) <- rawfiles_name
+
+rawfiles_1 = list.files(path = base.dir, pattern = ".*_shap_foldwise.csv")
+
+feature_summary_df <- rbindlist(df_list, idcol = "changedname") %>%
+  mutate(feature = ifelse(feature == "DvsT", "DiseaseStatus", feature))
+
+feature_summary_df <- feature_summary_df %>%
+  left_join(topcombi[,c(1,12)], by=c("changedname" = "Combination")) %>%
+  dplyr::select(Combination := last_col(), everything()) %>% dplyr::select(-2) %>%
+  left_join(categories) %>%
+  group_by(Combination, type) %>%
+  mutate(rank = rank(-mean_abs_shap, ties.method = "average"),
+         rank = case_when(mean_abs_shap == 0 & type == "numeric" ~ 15,
+                          mean_abs_shap == 0 & type == "category" ~ 86,
+                          .default = rank) # when feature has no contribution
+         ) 
+
+write.csv(feature_summary_df, "output/supp/ML/feature_summary_df.csv", row.names = F)
+```
+
+## feature stability of reliable folds and models only
+
+- only considering (poor models are not included)
+  - all folds of stable models
+  - sig folds of unstable models
+
+    poor   stable unstable 
+     127       17       26 
+
+ 0  1  2  3  4  5 
+92 35 13 13 11  6
+
+```{r}
+na_mask <- perf_summary_perfold %>%
+  mutate(fold = paste0("fold", fold) ) %>%
+  dplyr::select(Combination, fold, sig_kendall, n_samples, n_sig_fold, category, median_CI, Better_combi) %>%
+  filter(category != "poor")
+
+x <- feature_summary_df[,c(1,2,7:11, 17)] %>% ungroup() %>%
+  pivot_longer(cols = starts_with("fold"), names_to = "fold", values_to = "mean_abs_shap") %>% 
+  mutate(fold = gsub("_mean_abs_shap", "", fold)) %>%
+  inner_join(na_mask) 
+
+## keeping only sig folds
+unstable_feature_sum <- x %>% filter(category == "unstable", sig_kendall == T) %>%
+  group_by(Combination, feature, category, median_CI, Better_combi, n_sig_fold, n_samples, type) %>%
+  summarise(mean_abs_shap = mean(mean_abs_shap))  %>%
+  ungroup() %>%
+  group_by(Combination, type) %>%
+  mutate(rank = rank(-mean_abs_shap, ties.method = "average"),
+         rank = case_when(mean_abs_shap == 0 & type == "numeric" ~ 15,
+                          mean_abs_shap == 0 & type == "category" ~ 86,
+                          .default = rank) # when feature has no contribution
+         ) 
+write.csv(unstable_feature_sum, "output/supp/ML/unstable_feature_summary_df.csv", row.names = F)
+
+## using all folds for robustness
+stable_feature_sum <- x %>% filter(category == "stable") %>%
+  group_by(Combination, feature, category, median_CI, Better_combi, n_sig_fold, n_samples, type) %>%
+  summarise(mean_abs_shap = mean(mean_abs_shap))  %>%
+  ungroup() %>%
+  group_by(Combination, type) %>%
+  mutate(rank = rank(-mean_abs_shap, ties.method = "average"),
+         rank = case_when(mean_abs_shap == 0 & type == "numeric" ~ 15,
+                          mean_abs_shap == 0 & type == "category" ~ 86,
+                          .default = rank) # when feature has no contribution
+         ) 
+write.csv(stable_feature_sum, "output/supp/ML/stable_feature_summary_df.csv", row.names = F)
+```
+
+## tbl9: saving all summary
+- saving per feature per model averaged across selected folds
+- saving poor models at the bottom
+```{r}
+perf_summary <- read.csv("output/supp/ML/model_perf_summary_df.csv") %>% filter(category =="poor")
+stable_feature_sum <- read.csv("output/supp/ML/stable_feature_summary_df.csv")
+unstable_feature_sum <- read.csv("output/supp/ML/unstable_feature_summary_df.csv")
+df <- rbind(stable_feature_sum, unstable_feature_sum) %>%
+  arrange(category, Combination, rank) %>%
+  bind_rows(perf_summary) 
+
+write.csv(df, "output/all_feature_summary_df.csv", row.names = F)
+```
+
+## tbl 10b: shap vs feature value
+- for beeswarm plot
+- combining
+  - for each combination
+  - for each sample
+  - for each feature
+    - test shap value
+    - feature value
+    - observed DSS
+```{r}
+## shap per sample
+rawfiles = list.files(path = base.dir, pattern = ".*_shap_stacked_sample_by_feature.csv")
+rawfiles_name <- gsub("_shap_stacked_sample_by_feature.csv", "", rawfiles)
+
+df_list <- lapply(rawfiles, function(i) read.csv(paste0(base.dir, i), check.names = F))
+names(df_list) <- rawfiles_name
+
+shap_per_sample_df <- rbindlist(df_list, idcol = "changedname") %>%
+  rename(DiseaseStatus = DvsT)
+
+## outputs per sample
+rawfiles = list.files(path = base.dir, pattern = ".*_residuals.csv")
+rawfiles_name <- gsub("_residuals.csv", "", rawfiles)
+
+df_list <- lapply(rawfiles, function(i) read.csv(paste0(base.dir, i), check.names = F))
+names(df_list) <- rawfiles_name
+
+DSS_per_sample_df <- rbindlist(df_list, idcol = "changedname") 
+
+## combine
+shap_summary_df <- bind_cols(DSS_per_sample_df, shap_per_sample_df[, 2:102]) %>%
+  mutate(Combination = listofnames[changedname]) %>%
+  select(Combination, everything())
+
+write.csv(shap_summary_df, "output/shap_summary_df.csv", row.names = F)
+```
+
+# plot
+
+```{r}
+perf_summary <- read.csv("output/supp/ML/model_perf_summary_df.csv")
+feature_summary_df <- read.csv("output/supp/ML/feature_summary_df.csv")
+shap_summary_df <- read.csv("output/shap_summary_df.csv", check.names = F)
+
+stable_feature_sum <- read.csv("output/supp/ML/stable_feature_summary_df.csv")
+unstable_feature_sum <- read.csv("output/supp/ML/unstable_feature_summary_df.csv")
+
+df <- read.csv("output/supp/ML/preprocessed_df.csv", check.names = F) %>%
+  rename(DiseaseStatus = DvsT)
+X_all <- df[3:103]
+rownames(X_all) <- df$Sample_ID
+Y_all <- df[104:273]
+rownames(Y_all) <- df$Sample_ID
+```
+
+## fig 4d: heatmap of stable + unstable shap (n=43)
+
+```{r}
+categories <- data.frame(feature = colnames(X_all),
+                         type = c(rep("numeric", 15), rep("category", 86))) 
+
+df <- rbind(stable_feature_sum, unstable_feature_sum)
+
+## matrix of rank for heatmap
+df_wide <- reshape2::acast(df, Combination ~ feature, value.var = "rank", fill = 0) 
+
+df_wide_cat <- df_wide[, categories$feature[categories$type == "category"] ]
+df_wide_cat <- df_wide_cat[, order(colMedians(df_wide_cat), decreasing = F)]
+
+df_wide_num <- df_wide[, categories$feature[categories$type == "numeric"] ]
+df_wide_num <- df_wide_num[, order(colMedians(df_wide_num), decreasing = F)]
+
+## split between unstable and stable
+split <- distinct_all(df[,c(1,3)]) %>% column_to_rownames("Combination")
+split <- split[rownames(df_wide),]
+
+```
+
+
+```{r}
+col_fun1 <- colorRamp2(c(86, 10, 1), c("#f7fbff", "#6baed6", "#08306b"))
+col_fun2 <- colorRamp2(c(15, 5, 1), c("#f7fcf5", "#74c476", "#00441b"))
+
+## barplot annot
+ha1 = HeatmapAnnotation(RankDistribtion = anno_boxplot(df_wide_cat, height = unit(3, "cm"), gp = gpar(fill = "#6baed6"), axis_param = list(side = "right", direction = "reverse")), annotation_name_rot = 0)
+ha2 = HeatmapAnnotation(RankDistribtion = anno_boxplot(df_wide_num, height = unit(3, "cm"), gp = gpar(fill = "#74c476"), axis_param = list(direction = "reverse" )), show_annotation_name = F, annotation_name_rot = 0)
+
+## heatemap
+hm1 <- Heatmap(df_wide_cat, name = "Category SHAP Rank", 
+        rect_gp = gpar(col = "white", lwd=0.5),
+        col = col_fun1, cluster_columns = F, #cluster_rows = F,
+        clustering_distance_rows = "pearson",
+        show_row_dend = F,
+        bottom_annotation = ha1,
+        column_title = "category",
+        width = unit(0.15*ncol(df_wide_cat), "in"),
+        height = unit(0.15*nrow(df_wide_cat), "in"),
+        row_split = split
+        # right_annotation = row_anno
+        )
+
+hm2 <- Heatmap(df_wide_num, name = "Numeric SHAP Rank", 
+        rect_gp = gpar(col = "white", lwd=0.5),
+        col = col_fun2, cluster_columns = F, #cluster_rows = F,
+        clustering_distance_rows = "pearson",
+        show_row_dend = F,
+        bottom_annotation = ha2,
+        column_title = "numeric",
+        width = unit(0.15*ncol(df_wide_num), "in"),
+        height = unit(0.15*nrow(df_wide_num), "in"),
+        row_split = split
+        )
+
+png("plot/fig4/main_4d_catboost_hm.png", res=300, width = 0.15*ncol(df_wide) + 5, height = 0.15*nrow(df_wide) + 5, units = "in")
+draw(hm2 + hm1, heatmap_legend_side = "bottom")
+
+```
+
+
+## tbl10a & fig 4c: scatterplot across models
+```{r}
+df <- rbind(stable_feature_sum, unstable_feature_sum) %>%
+  filter(mean_abs_shap != 0, # filtering out uninformative features
+         ) %>% 
+  mutate(norm_rank = case_when(type == "numeric" ~ rank/15, type == "category" ~ rank/86) 
+         ) %>%
+  group_by(feature, type) %>%
+  reframe(mean_rank = mean(norm_rank),
+          median_rank = median(norm_rank),
+         sd_rank = sd(norm_rank),
+         n_model = n()
+         )
+
+```
+
+```{r}
+annotating_features <- cbind(categories,
+                             category = c(
+                               rep("clinical labs", 14),
+                               rep("patient info", 9), 
+                               rep("mutation", 42),
+                               rep("IHC", 28),
+                               rep("cytogenetics", 8)
+                             )
+                             )
+
+df <- left_join(df, annotating_features)
+write.csv(df, "output/top_feature_summary_df.csv", row.names = F)
+
+df %>%
+  ggplot(., aes(x =mean_rank, y = sd_rank, label = feature, size = n_model, color = category, shape = type)) +
+  geom_point(alpha = 0.7) +
+  ggrepel::geom_text_repel(size = 3, max.overlaps = 17) +
+  scale_color_manual(values = c("#377EB8", "#4DAF4A", "#E6AB02",  "#A65628", "#F781BF")) +
+  # scale_size(range = c(1,8)) +
+  scale_radius(range = c(0.1,3)) +
+  geom_vline(xintercept = 0.5, lty=2) +
+  scale_y_continuous(transform = "log10") +
+  geom_hline(yintercept = 0.25, lty=2)  +
+  theme_minimal(base_family = 14) +
+  labs(#title = "SHAP Feature Rank Stability Across Models",
+       x = "Mean Rank (lower = more important)",
+       y = "Rank Standard Deviation (lower = more stable)") +
+  theme(aspect.ratio = 1) +
+  guides(color = guide_legend(override.aes = list(label="", size=3) ),
+         shape = guide_legend(override.aes = list(size=3) )) 
+
+ggsave("plot/fig4/main_4c_global_shap.png", width=6.5, height=7)
+
+```
+
+## observation (using stable & unstable only)
+```{r}
+## to use both stable and unstable
+perf_summary_perfold <- read.csv("output/model_perf_summary_perfold.csv")
+keep_fold <- perf_summary_perfold %>% filter(category == "stable"|(category == "unstable" & sig_kendall == T)) 
+
+all_feature_sum <- rbind(stable_feature_sum, unstable_feature_sum)
+shap_summary_df_filt <- inner_join(shap_summary_df, keep_fold[1:2])
+
+# write.csv(shap_summary_df_filt, "output/supp/ML/shap_summary_df_filt.csv", row.names = F)
+```
+
+### selected
+```{r}
+# setting defaults
+color_category <- c(subtype.col3, eln.col[1:4], disease.col3, 
+                    "RR" = "firebrick",
+                    "TRUE" = "#c5247d",
+                    "FALSE" = "#4d9220")
+# x_range = shap_values$shap_value %>% quantile(probs = c(0,1))
+type = ""
+
+color_setting <- if(type == "category"){ 
+  scale_color_manual(values = color_category, name = "Category\nFeature values")} else {scale_color_distiller(palette = "PiYG", name = "Numeric\nFeature values")}
+
+legend_setting <- if(type == "category"){ 
+  theme(legend.key.height = unit(0.1,"cm"))} else {theme(legend.key.height = unit(0.3,"cm"))}
+
+minmax_scale <- function(x) {
+  (x - min(x, na.rm = TRUE)) / (max(x, na.rm = TRUE) - min(x, na.rm = TRUE))
+}
+```
+
+```{r}
+plot_selected_feature <- function(selected, type = "category", rank_ = 3, keep_ = 1){
+  
+  ## def
+  color_category <- c(subtype.col3, eln.col[1:4], disease.col3, 
+                      "RR" = "firebrick",
+                      "TRUE" = "#c5247d",
+                      "FALSE" = "#4d9220")
+  
+  color_setting <- if(type == "category"){ 
+    scale_color_manual(values = color_category, name = "Category\nFeature values")} else {scale_color_distiller(palette = "PiYG", name = "Numeric\nFeature values")}
+  
+  legend_setting <- if(type == "category"){ 
+    theme(legend.key.height = unit(0.1,"cm"))} else {theme(legend.key.height = unit(0.3,"cm"))}
+  
+  ## load
+  selected_feature <- all_feature_sum %>%
+    filter(feature %in% selected , median_CI <= 1) %>%
+    group_by(Combination) %>%
+    mutate(keep = sum(rank <= rank_)) %>%
+    filter(keep >= keep_ )
+    
+  shap_values <- shap_summary_df_filt %>%
+    filter(Combination %in% selected_feature$Combination) %>%
+    select(Combination, sample_index, all_of(selected)) %>%
+    reshape2::melt(., id.vars = c("Combination", "sample_index"), variable.name = "feature", value.name = "shap_value")
+  
+  
+  if (type == "category") {
+    feature_values <- X_all %>%
+      rownames_to_column("sample_index") %>%
+      select(sample_index, all_of(selected)) %>%
+      reshape2::melt(., id.vars = "sample_index", variable.name = "feature", value.name = "feature_value")
+  } else {
+    feature_values <- X_all %>%
+      rownames_to_column("sample_index") %>%
+      select(sample_index, all_of(selected)) %>%
+      mutate_at(all_of(selected), .funs = ~minmax_scale(.x)) %>%
+      reshape2::melt(., id.vars = "sample_index", variable.name = "feature", value.name = "feature_value")
+  }
+  
+  df <- inner_join(feature_values, shap_values) %>%
+    left_join(selected_feature[,c(1,2,10,11)]) %>%
+    arrange(keep) %>%
+    mutate(feature = factor(feature, levels = selected) 
+           )
+  df$Combination <- factor(df$Combination, levels = pull(distinct(df, Combination)))
+  
+  if (type == "category") { df <- df %>% mutate(feature_value = factor(feature_value, levels = names(color_category))) }
+  
+  df %>% 
+    ggplot(., aes(x=shap_value, y=Combination, color=feature_value)) +
+    ggbeeswarm::geom_beeswarm(cex = 2.5, corral = "wrap", corral.width = 0.7, shape=16, alpha=0.8, size = 1) +
+    color_setting +
+    labs(x="SHAP values\n \u2190 Resistant                      Sensitive \u2192", y="") +
+    geom_vline(xintercept = 0, linetype=6) +
+    theme_classic(base_size = 12) +
+    facet_grid(~feature, scales = "free_x")  +
+    theme(axis.text.x = element_text(colour = "black", size = 11, angle = 45, hjust = 1),
+          axis.text.y = element_text(colour = "black", size = 11),
+          panel.grid.major = element_line(colour = "grey85", linewidth = 0.25),
+          aspect.ratio = 3
+          ) +
+    legend_setting + 
+    if (type == "category") guides(color = guide_legend(override.aes = list(size=3) ) )
+}
+```
+
+
+### fig 4e: selected mutation
+
+```{r}
+selected = c("FLT3", "NRAS", "DNMT3A", "NPM1")
+plot_selected_feature(selected, type = "category", rank_ = 3, keep_ = 1)
+
+ggsave(paste0("plot/fig4/main_4e_mutation.png"), dpi = 600, width = 8.5, height =6)
+
+```
+
+### fig 4f: selected markers
+```{r}
+selected = c("CD117", "MPO", "CD11b", "CD64", "CD14", "FAB_subtype")
+plot_selected_feature(selected, type = "category", rank_ = 10, keep_ = 2)
+
+ggsave(paste0("plot/fig4/main_4f_markers.png"), dpi = 600, width = 11, height =6)
+
+```
+
+## supp fig 5a: selected numerical
+
+```{r}
+selected = c("percentMonocytesPB", "percentBlastsBM", "Age")
+plot_selected_feature(selected, type = "numeric", rank_ = 5, keep_ = 2) + theme(text = element_text(size=11))
+
+ggsave(paste0("plot/suppfig5/supp_5a_numeric.png"), dpi = 600, width = 7.5, height =5)
+```
+
+## supp fig 5
+```{r}
+plot_selected_feature_long <- function(
+    selected, type = "category", 
+    rank_ = 15){
+  
+  ## def
+  color_category <- c(subtype.col3, eln.col[1:4], disease.col3, 
+                      "RR" = "firebrick",
+                      "TRUE" = "#c5247d",
+                      "FALSE" = "#4d9220")
+  
+  color_setting <- if(type == "category"){ 
+    scale_color_manual(values = color_category, name = "Category\nFeature values")} else {scale_color_distiller(palette = "PiYG", name = "Numeric\nFeature values")}
+  
+  legend_setting <- if(type == "category"){ 
+    theme(legend.key.height = unit(0.1,"cm"))} else {theme(legend.key.height = unit(0.3,"cm"))}
+  
+  ## load
+  selected_feature <- all_feature_sum %>%
+    filter(feature %in% selected , median_CI <= 1, rank <= rank_) %>%
+    mutate(label = paste0(Combination, " [", rank, "]")) %>%
+    arrange(-rank)
+    
+  shap_values <- shap_summary_df_filt %>%
+    filter(Combination %in% selected_feature$Combination) %>%
+    select(Combination, sample_index, all_of(selected)) %>%
+    reshape2::melt(., id.vars = c("Combination", "sample_index"), variable.name = "feature", value.name = "shap_value")
+  
+  
+  if (type == "category") {
+    feature_values <- X_all %>%
+      rownames_to_column("sample_index") %>%
+      select(sample_index, all_of(selected)) %>%
+      reshape2::melt(., id.vars = "sample_index", variable.name = "feature", value.name = "feature_value")
+  } else {
+    feature_values <- X_all %>%
+      rownames_to_column("sample_index") %>%
+      select(sample_index, all_of(selected)) %>%
+      mutate_at(all_of(selected), .funs = ~minmax_scale(.x)) %>%
+      reshape2::melt(., id.vars = "sample_index", variable.name = "feature", value.name = "feature_value")
+  }
+  
+  df <- inner_join(feature_values, shap_values) %>%
+    inner_join(selected_feature[,c(1,2,10,11)]) %>%
+    mutate(feature = factor(feature, levels = selected) ,
+         label = factor(label, selected_feature$label))
+
+  if (type == "category") { df <- df %>% mutate(feature_value = factor(feature_value, levels = names(color_category))) }
+  
+  df %>% 
+    ggplot(., aes(x=shap_value, y=label, color=feature_value)) +
+    ggbeeswarm::geom_beeswarm(cex = 2.5, corral = "wrap", corral.width = 0.7, shape=16, alpha=0.8, size = 1) +
+    color_setting +
+    labs(x="SHAP values\n \u2190 Resistant                      Sensitive \u2192", y="") +
+    theme_classic(base_size = 11) + geom_vline(xintercept = 0, linetype=6) +
+    facet_col( ~ feature , drop = T, scale = "free_y", space = "free" )  + 
+    theme(axis.text.x = element_text(colour = "black", size = 11, angle = 45, hjust = 1),
+          axis.text.y = element_text(colour = "black", size = 11),
+          panel.grid.major = element_line(colour = "grey85", linewidth = 0.5),
+          strip.text = element_text(size = 8)
+          ) +
+    legend_setting + 
+    guides(color = guide_legend(override.aes = list(size=3) ) )
+}
+```
+
+```{r}
+## "cyto"
+selected = c("CBFB-MYH11", "KMT2A_re", "MECOM_re", "PML-RARA", "RUNX1-RUNX1T1", "Other_re", "Other_abn", "Other_abn2")
+plot_selected_feature_long(selected, type = "category")
+ggsave("plot/suppfig5/supp_5c_cyto.png", dpi = 600, width = 5.5, height = 10)
+
+## "other"
+selected = c("isMale", "ELN2022", "DiseaseStatus", "priorMDS")
+plot_selected_feature_long(selected, type = "category")
+ggsave("plot/suppfig5/supp_5d_other.png", dpi = 600, width = 5.5, height = 8)
+
+## "mut"
+selected = c("IDH1", "SRSF2", "GATA2", "TET2", "IDH2", "KMT2A", "TP53")
+plot_selected_feature_long(selected, type = "category")
+ggsave("plot/suppfig5/supp_5b_mut.png", dpi = 600, width = 5.5, height = 10)
+
+
+# name = "marker"
+# selected = c("CD9", "CD38", "CD56", "CD4", "CD34")
+# height = 10
+```
+
+
+## fig 5a: heatmap for schematics
+```{r}
+normalized_df <- X_all %>%
+  # Normalize numeric columns 1:14
+  mutate(across(1:14, ~ if (is.numeric(.)) {
+    rng <- range(., na.rm = TRUE)
+    (. - rng[1]) / (rng[2] - rng[1])
+  } else {
+    .
+  })) %>%
+  
+  # Normalize Age separately (if needed)
+  mutate(Age = Age / 88) %>%
+  
+  # Binary encode annotation/logical columns 15:19
+  mutate(across(FAB_subtype:Other_abn2, ~ case_when(
+    . == TRUE ~ 1L,
+    . == FALSE ~ 0L,
+    is.na(.) ~ NA_integer_,
+    TRUE ~ 1L
+  )))
+
+ht_opt(heatmap_row_title_gp = gpar(fontsize = 16),
+       heatmap_column_title_gp = gpar(fontsize = 20))
+
+hm_x1 <- Heatmap(t(normalized_df[1:14]), rect_gp = gpar(col = "black", lwd=0.0001),
+                col = colorRamp2(c(0, 1), c("#f7fbff", "#377EB8")),
+                cluster_rows = F, cluster_columns = F,
+                show_row_names = F, show_column_names = F, show_heatmap_legend = F,
+                row_title = "Clinical labs\n(n=14)", row_title_rot = 0,
+                column_title = "Samples (n=596)",
+                width = unit(6, "in"), height = unit(0.05* 14, "in")
+                )
+
+hm_x2 <- Heatmap(t(normalized_df[15:23]), rect_gp = gpar(col = "black", lwd=0.0001),
+                col = colorRamp2(c(0, 1), c("#f7fbff", "#F781BF")),
+                cluster_rows = F, cluster_columns = F,
+                show_row_names = F, show_column_names = F, show_heatmap_legend = F,
+                row_title = "Patient info\n(n=9)", row_title_rot = 0,
+                width = unit(6, "in"), height = unit(0.05* 9, "in")
+                )
+
+hm_x3 <- Heatmap(t(normalized_df[24:65]), rect_gp = gpar(col = "black", lwd=0.0001),
+                col = colorRamp2(c(0, 1), c("#f7fbff", "#A65628")),
+                cluster_rows = F, cluster_columns = F,
+                show_row_names = F, show_column_names = F, show_heatmap_legend = F,
+                row_title = "Mutation\n(n=42)", row_title_rot = 0,
+                width = unit(6, "in"), height = unit(0.05* 42, "in")
+                )
+
+hm_x4 <- Heatmap(t(normalized_df[66:93]), rect_gp = gpar(col = "black", lwd=0.0001),
+                col = colorRamp2(c(0, 1), c("#f7fbff", "#E6AB02")),
+                cluster_rows = F, cluster_columns = F,
+                show_row_names = F, show_column_names = F, show_heatmap_legend = F,
+                row_title = "IHC\n(n=28)", row_title_rot = 0,
+                width = unit(6, "in"), height = unit(0.05* 28, "in")
+                )
+
+hm_x5 <- Heatmap(t(normalized_df[94:101]), rect_gp = gpar(col = "black", lwd=0.0001),
+                col = colorRamp2(c(0, 1), c("#f7fbff", "#4DAF4A")),
+                cluster_rows = F, cluster_columns = F,
+                show_row_names = F, show_column_names = F, show_heatmap_legend = F,
+                row_title = "Cytogenetics\n(n=8)", row_title_rot = 0,
+                width = unit(6, "in"), height = unit(0.05* 8, "in")
+                )
+
+hm_y <- Heatmap(t(Y_all), rect_gp = gpar(col = "black", lwd=0.0001),
+                col= colorRamp2(seq(0,1,by=0.1), viridis::viridis(n=11)),
+                cluster_rows = F, cluster_columns = F,
+                show_row_names = F, show_column_names = F, show_heatmap_legend = F,
+                row_title = "Combination\n(n=170)", row_title_rot = 0,
+                width = unit(6, "in"),
+                height = unit(0.02* 170, "in")
+                )
+
+ht_list = hm_x1 %v% hm_x2 %v% hm_x3 %v% hm_x4 %v% hm_x5  
+
+png("plot/fig4/main_4a_catboost_schematic_feature.png", res=1000, width = 8, height = 8, units = "in")
+draw(ht_list, row_title = "Features (n=101)", row_title_gp = gpar(fontsize = 20))
+dev.off()
+
+png("plot/fig4/main_4a_catboost_schematic_y.png", res=1000, width = 8, height = 4, units = "in")
+draw(hm_y, row_title = "Targets", row_title_gp = gpar(fontsize = 20))
+
+
+ht_opt(RESET = TRUE)
+```
+
+# statistical association
+```{r}
+df <- read.csv("output/supp/ML/preprocessed_df.csv", check.names = F) %>%
+  rename(DiseaseStatus = DvsT)
+
+## features
+X_all <- df[3:103]
+rownames(X_all) <- df$Sample_ID
+X_all_numerical <- X_all[1:15]
+X_all_categorical <- X_all[16:101]
+
+categories <- data.frame(feature = colnames(X_all),
+                         type = c(rep("numeric", 15), rep("category", 86)))
+## combination
+Y_all <- df[104:273]
+rownames(Y_all) <- df$Sample_ID
+```
+
+## tbl 11a: category
+
+```{r}
+output <- .run.pwc.wilcox(X_all_categorical, Y_all, min.n=5, p.adj.m="fdr") %>%
+  mutate(Combination = listofnames[Combination])
+
+write.csv(output, "output/wilcox_pwc_combi.csv", row.names = F)
+```
+
+## tbl 11b: numerics
+
+```{r}
+output <- .run.cor(X_all_numerical, Y_all, min.n=5, method="spearman", p.adj.m="fdr") %>%
+  mutate(Combination = listofnames[Combination])
+
+write.csv(output, "output/spear_numeric_combi.csv", row.names = F)
+```
+
+
+# session info
+```{r}
+sessionInfo()
+```

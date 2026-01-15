@@ -1,0 +1,334 @@
+---
+title: "Synergy Calculation"
+description: "not processed in this github"
+date: "23 February | 26 March | 21 may"
+output: 
+  html_notebook:
+    theme: united
+    toc: yes
+    toc_float: yes
+---
+
+- purpose: to see if bad predictions can be explained by drug interaction
+- code for data for Bliss/Loewe are from synergyfinder
+
+code:
+<https://github.com/shuyuzheng/synergyfinder>
+
+vignette:
+<https://www.bioconductor.org/packages/release/bioc/vignettes/synergyfinder/inst/doc/User_tutorual_of_the_SynergyFinder_plus.html>
+
+tutorial: <https://europepmc.org/article/PMC/6383747>
+
+# loading library
+```{r message=FALSE, warning=FALSE}
+library(tidyverse)
+library(data.table)
+source("src/function/supp/loewe_fn.R")
+source("src/function/supp/curvefit.R")
+```
+
+# loading data
+```{r}
+mono <- read.csv("data/oshu/DSS_mono.csv")
+combi <- read.csv("data/oshu/DSS_combi.csv")
+
+listofcombi <- unique(combi[,3:5])
+
+combidet <- read.csv("data/oshu/combi_detail.csv")[3:4]
+colnames(combidet) <- c("name", "Chemical_compound")
+drugdet <- read.csv("data/oshu/mono_detail.csv")[1:2]
+colnames(drugdet) <- c("name", "Chemical_compound")
+
+all_drugdet <- rbind(combidet, drugdet)
+
+sampleinfo <- read.csv("data/oshu/clinical_summary.csv")[,c(3,4,2)] %>%
+  dplyr::rename(lab_id = labId, patient=patientId)
+
+raw_data <- read.csv("data/oshu/raw/viability_oshu.csv")[,c(1,2,6,7,10,11,14)] %>%
+  filter(drug != "Control",
+         drug != "Quizartinib - NVP-TAE684 - Arsenic Trioxide") %>%
+  mutate(percent_viability = normalized_probit_result/100,
+         percent_inhibition = 1 - normalized_probit_result/100) %>%
+  left_join(., all_drugdet, by=c("drug" = "name"), multiple = "first") %>%
+  inner_join(., sampleinfo) 
+
+```
+
+# combination index (highest single agent)
+- function:
+  CI = max(E_a, E_b) / E_ab 
+    CI < 1 = combination more effective 
+    CI = 1 = equally effective 
+    CI > 1 = monotherapy is better
+  Excess HSA = Observed - Expected
+- using DSS as efficacy
+- summarized using median over samples
+
+# HSA/IDA's calculation
+```{r}
+HSA_eval <- rbindlist(
+  lapply(setNames(1:170, listofcombi$Combination), function(i){
+    
+    # combination DSS per sample
+    data <- combi[combi$Combination==listofcombi[i, 3],] %>%
+      dplyr::select(Sample_ID, Combination, s_dss)
+    
+    # monotherapy DSS per sample
+    data <- mono[mono$Chemical_compound %in% listofcombi[i, 1:2],] %>%
+      reshape2::dcast(Sample_ID ~ Chemical_compound, fun.aggregate = mean, value.var = "s_dss", fill = NA_real_) %>%
+      inner_join(., data, by="Sample_ID")
+    
+    data <- data[complete.cases(data),]
+    colnames(data)[2:3] <- c("Drug1_dss", "Drug2_dss")
+    
+    data$best_mono <- apply(data[,2:3], 1, function(x){ifelse(x[1]==x[2], NA, listofcombi[i, which.max(x)])})
+    data$HSA_ref = pmax(data$Drug1_dss, data$Drug2_dss)
+    data$Excess_HSA = data$s_dss - data$HSA_ref
+    data$CI <- data$HSA_ref/data$s_dss
+    data$CI[is.nan(data$CI)] = NA # Inf when combi=0; NaN when all is 0
+    data
+  })
+)
+
+# save(HSA_eval, file="output/synergy/HSA_eval.RData")
+```
+
+```{r}
+##### HSA concentration method (not evaluated) #####
+## HSA calculated at each conc point before recalculating DSS
+# HSA_ref_list = list()
+# HSA_CI_list = list()
+# Excess_hsa_list = list()
+# pb <- txtProgressBar(min = 0, max = 170, style = 3, width = 50, char = "=")
+# for (i in 1:170){
+#   combi_ = raw_data[raw_data$Chemical_compound %in% listofcombi[i, 3],] %>%
+#     reshape2::acast(Sample_ID ~ concentration, fun.aggregate = mean, value.var = "percent_inhibition", fill = NA_real_) 
+#   
+#   drug1_ = raw_data[raw_data$Chemical_compound %in% listofcombi[i, 1],] %>%
+#     reshape2::acast(Sample_ID ~ concentration, fun.aggregate = mean, value.var = "percent_inhibition", fill = NA_real_) 
+#   
+#   drug2_ = raw_data[raw_data$Chemical_compound %in% listofcombi[i, 2],] %>%
+#     reshape2::acast(Sample_ID ~ concentration, fun.aggregate = mean, value.var = "percent_inhibition", fill = NA_real_) 
+#   
+#   common <- Reduce(intersect, list(rownames(combi_), rownames(drug1_), rownames(drug2_)))
+#   
+#   HSA_ref = pmax(drug1_[common,],drug2_[common,])
+#   
+#   # DSS for HSA ref
+#   DSS <- rbindlist(lapply(common, function(x){
+#     suppressWarnings(CALC_DSS_single(HSA_ref[x,]*100, as.numeric(colnames(HSA_ref)), listofcombi[i, 3]))
+#   }))
+#   colnames(HSA_ref) = paste0("Conc_", 1:7)
+#   
+#   CI = HSA_ref / combi_[common,]
+#   colnames(CI) = paste0("Conc_", 1:7)
+#   
+#   Excess_hsa = combi_[common,] - HSA_ref
+#   colnames(Excess_hsa) = paste0("Conc_", 1:7)
+#   
+#   HSA_ref = as.data.frame(HSA_ref) 
+#   HSA_ref$Sample_ID = rownames(HSA_ref)
+#   HSA_ref <- cbind(HSA_ref, DSS)
+#   HSA_ref_list [[listofcombi[i, 3]]] = HSA_ref[,c(8,1:7,9:11)]
+#   
+#   CI = as.data.frame(CI) 
+#   CI$Sample_ID = rownames(CI)
+#   HSA_CI_list [[listofcombi[i, 3]]] = CI[,c(8,1:7)]
+#   
+#   Excess_hsa = as.data.frame(Excess_hsa) 
+#   Excess_hsa$Sample_ID = rownames(Excess_hsa)
+#   Excess_hsa_list [[listofcombi[i, 3]]] = Excess_hsa[,c(8,1:7)]
+#   
+#   setTxtProgressBar(pb, i)
+# }
+# close(pb)
+# 
+# HSA_ref_list = rbindlist(HSA_ref_list, idcol=TRUE) %>%
+#   dplyr::rename(Combination = .id) %>%
+#   inner_join(., HSA_eval[,c(1,4,5)], by=c("Combination", "Sample_ID"))
+# 
+# HSA_CI_list = rbindlist(HSA_CI_list, idcol=TRUE) %>%
+#   dplyr::rename(Combination = .id) %>%
+#   inner_join(., HSA_eval[,c(1,4,5)], by=c("Combination", "Sample_ID"))
+# HSA_CI_list$CI = apply(HSA_CI_list[,3:9], MARGIN = 1, FUN = function(x) median(x, na.rm=T))
+# 
+# Excess_hsa_list = rbindlist(Excess_hsa_list, idcol=TRUE) %>%
+#   dplyr::rename(Combination = .id) %>%
+#   inner_join(., HSA_eval[,c(1,4,5)], by=c("Combination", "Sample_ID"))
+# Excess_hsa_list$excess_hsa = apply(Excess_hsa_list[,3:9], MARGIN = 1, FUN = function(x) median(x, na.rm=T))
+# 
+# 
+# save(HSA_ref_list, file="output/synergy/HSA_ref_list.RData")
+# save(HSA_CI_list, file="output/synergy/HSA_CI_list.RData")
+# save(Excess_hsa_list, file="output/synergy/Excess_hsa_list.RData")
+```
+
+
+# Bliss's calculation
+- function: 
+  CI = (E_a + E_b - E_a * E_b) / E_ab
+  CI < 1 == synergy
+  Excess bliss = Observed - Expected (ideal is expected > observed)
+- E refers to *percent inhibition* (which normalised based on neg and pos control)
+- higher inhibition == better; so CI < 1 is synergistic
+
+c('drug', 'Concentration','Patient.num' ,'inhibition_percent', 'ID')
+```{r}
+Bliss_ref_list = list()
+Bliss_CI_list = list()
+Excess_bliss_list = list()
+
+pb <- txtProgressBar(min = 0, max = 170, style = 3, width = 50, char = "=")
+for (i in 1:170){
+  combi_ = raw_data[raw_data$Chemical_compound %in% listofcombi[i, 3],] %>%
+    reshape2::acast(Sample_ID ~ concentration, fun.aggregate = mean, value.var = "percent_inhibition", fill = NA_real_) 
+  
+  drug1_ = raw_data[raw_data$Chemical_compound %in% listofcombi[i, 1],] %>%
+    reshape2::acast(Sample_ID ~ concentration, fun.aggregate = mean, value.var = "percent_inhibition", fill = NA_real_) 
+  
+  drug2_ = raw_data[raw_data$Chemical_compound %in% listofcombi[i, 2],] %>%
+    reshape2::acast(Sample_ID ~ concentration, fun.aggregate = mean, value.var = "percent_inhibition", fill = NA_real_) 
+  
+  common <- Reduce(intersect, list(rownames(combi_), rownames(drug1_), rownames(drug2_)))
+  
+  Bliss_ref = drug1_[common,] + drug2_[common,] - (drug1_[common,] * drug2_[common,])
+  
+  # DSS for bliss ref
+  DSS <- rbindlist(lapply(common, function(x){
+    suppressWarnings(CALC_DSS_single(Bliss_ref[x,]*100, as.numeric(colnames(Bliss_ref)), listofcombi[i, 3]))
+  }))
+  colnames(Bliss_ref) = paste0("Conc_", 1:7)
+  
+  CI = Bliss_ref / combi_[common,]
+  colnames(CI) = paste0("Conc_", 1:7)
+  
+  Excess_bliss = combi_[common,] - Bliss_ref
+  colnames(Excess_bliss) = paste0("Conc_", 1:7)
+  
+  Bliss_ref = as.data.frame(Bliss_ref) 
+  Bliss_ref$Sample_ID = rownames(Bliss_ref)
+  Bliss_ref <- cbind(Bliss_ref, DSS)
+  Bliss_ref_list [[listofcombi[i, 3]]] = Bliss_ref[,c(8,1:7,9:11)]
+  
+  CI = as.data.frame(CI) 
+  CI$Sample_ID = rownames(CI)
+  Bliss_CI_list [[listofcombi[i, 3]]] = CI[,c(8,1:7)]
+  
+  Excess_bliss = as.data.frame(Excess_bliss) 
+  Excess_bliss$Sample_ID = rownames(Excess_bliss)
+  Excess_bliss_list [[listofcombi[i, 3]]] = Excess_bliss[,c(8,1:7)]
+  
+  setTxtProgressBar(pb, i)
+}
+close(pb)
+
+
+Bliss_ref_list = rbindlist(Bliss_ref_list, idcol=TRUE) %>%
+  dplyr::rename(Combination = .id) %>%
+  inner_join(., HSA_eval[,c(1,4,5)], by=c("Combination", "Sample_ID"))
+
+Bliss_CI_list = rbindlist(Bliss_CI_list, idcol=TRUE) %>%
+  dplyr::rename(Combination = .id) %>%
+  inner_join(., HSA_eval[,c(1,4,5)], by=c("Combination", "Sample_ID"))
+Bliss_CI_list$CI = apply(Bliss_CI_list[,3:9], MARGIN = 1, FUN = function(x) median(x, na.rm=T))
+
+Excess_bliss_list = rbindlist(Excess_bliss_list, idcol=TRUE) %>%
+  dplyr::rename(Combination = .id) %>%
+  inner_join(., HSA_eval[,c(1,4,5)], by=c("Combination", "Sample_ID"))
+Excess_bliss_list$excess_bliss = apply(Excess_bliss_list[,3:9], MARGIN = 1, FUN = function(x) median(x, na.rm=T))
+
+
+save(Bliss_ref_list, file="output/supp/Bliss_ref_list.RData")
+save(Bliss_CI_list, file="output/supp/Bliss_CI_list.RData")
+save(Excess_bliss_list, file="output/supp/Excess_bliss_list.RData")
+```
+
+
+# Loewe's calculation
+- function: 
+  CI = dose_a/ dose_a(that can give E_ab) + dose_b/ dose_b(that can give E_ab)
+  CI < 1 == synergy
+- uses *percent inhibition* for E - higher the better
+- excess loewe = observed - expected (ideal is observed > expected)
+- requires identification of the dose-response curve function
+- using functions from synergyfinder instead (modified)
+```{r}
+# raw_data 
+xpr_tbl <- raw_data %>%
+  mutate(dose = concentration * 1000,
+         response = 100 - normalized_probit_result) %>% # percent inhibition
+  dplyr::select(Sample_ID, Chemical_compound, dose, response) %>%
+  group_by(Sample_ID, Chemical_compound, dose) %>%
+  summarise(response = mean(response)) # averaging replicates 
+
+options(warn = -1)
+Loewe_ref_list = list()
+Loewe_CI_list = list()
+Excess_loewe_list = list()
+# Initializes the progress bar
+pb <- txtProgressBar(min = 0, max = 170, style = 3, width = 50, char = "=")
+for (i in 1:170){
+  drug1_ = xpr_tbl[xpr_tbl$Chemical_compound %in% listofcombi[i, 1],] 
+  drug2_ = xpr_tbl[xpr_tbl$Chemical_compound %in% listofcombi[i, 2],]
+  combi_ = xpr_tbl[xpr_tbl$Chemical_compound %in% listofcombi[i, 3],] 
+  
+  common <- Reduce(intersect, list(unique(combi_$Sample_ID), unique(drug1_$Sample_ID), unique(drug2_$Sample_ID)))
+  
+  combi_ <- combi_[combi_$Sample_ID %in% common,]
+  drug1_ <- drug1_[drug1_$Sample_ID %in% common,]
+  drug2_ <- drug2_[drug2_$Sample_ID %in% common,]
+  
+  Loewe_ref = list()
+  Loewe_CI = list()
+  Excess_loewe = list()
+  for (j in common){
+    drug1 = drug1_[drug1_$Sample_ID == j, c("dose", "response")]
+    drug2 = drug2_[drug2_$Sample_ID == j, c("dose", "response")]
+    single_drug_data <- list( drug1, drug2 )
+    
+    response = data.frame(conc1 = drug1$dose,
+                          conc2 = drug2$dose,
+                          response =  combi_$response[combi_$Sample_ID == j])
+    
+    res <- Loewe_2(single_drug_data, response)
+    
+    DSS <- suppressWarnings(CALC_DSS_single(res$Loewe_ref, pmax(response[,1], response[,2]), listofcombi[i, 3]))
+    
+    Loewe_ref[[j]] = cbind(as.data.frame(t(res$Loewe_ref)), DSS)
+    Loewe_CI[[j]] = as.data.frame(t(res$CI)) # returns Inf when E_ab = 0
+    Excess_loewe[[j]] = as.data.frame(t(res$Excess_loewe))
+  }
+  
+  Loewe_ref <- rbindlist(Loewe_ref, idcol=TRUE)
+  Loewe_CI <- rbindlist(Loewe_CI, idcol=TRUE)
+  Excess_loewe <- rbindlist(Excess_loewe, idcol=TRUE)
+  
+  Loewe_ref_list [[listofcombi[i, 3]]] = Loewe_ref
+  Loewe_CI_list [[listofcombi[i, 3]]] = Loewe_CI
+  Excess_loewe_list [[listofcombi[i, 3]]] = Excess_loewe
+  
+  setTxtProgressBar(pb, i)
+}
+options(warn = 0)
+close(pb)
+
+Loewe_ref_list <- rbindlist(Loewe_ref_list, idcol=TRUE) 
+colnames(Loewe_ref_list) <- c("Combination", "Sample_ID",paste0("Conc_", 1:7))
+Loewe_ref_list <- inner_join(Loewe_ref_list, HSA_eval[,c(1,4,5)], by=c("Combination", "Sample_ID"))
+
+Loewe_CI_list <- rbindlist(Loewe_CI_list, idcol=TRUE)
+colnames(Loewe_CI_list) <- c("Combination", "Sample_ID",paste0("Conc_", 1:7))
+Loewe_CI_list <- inner_join(Loewe_CI_list, HSA_eval[,c(1,4,5)], by=c("Combination", "Sample_ID"))
+Loewe_CI_list$CI = apply(Loewe_CI_list[,3:9], MARGIN = 1, FUN = function(x) median(x, na.rm=T))
+
+Excess_loewe_list <- rbindlist(Excess_loewe_list, idcol=TRUE)
+colnames(Excess_loewe_list) <- c("Combination", "Sample_ID",paste0("Conc_", 1:7))
+Excess_loewe_list <- inner_join(Excess_loewe_list, HSA_eval[,c(1,4,5)], by=c("Combination", "Sample_ID"))
+Excess_loewe_list$excess_loewe = apply(Excess_loewe_list[,3:9], MARGIN = 1, FUN = function(x) median(x, na.rm=T))
+
+save(Loewe_ref_list, file="output/supp/Loewe_ref_list.RData")
+save(Loewe_CI_list, file="output/supp/Loewe_CI_list.RData")
+save(Excess_loewe_list, file="output/supp/Excess_loewe_list.RData")
+
+```

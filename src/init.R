@@ -2,7 +2,7 @@
 renv::init(bioconductor = "3.19")
 
 ## installing packages
-renv::install("rstatix@0.7.2", "R.utils@2.12.3", "reshape2@1.4.4") # installs new versions Rcpp@1.0.13
+renv::install("rstatix@0.7.2", "R.utils@2.12.3", "reshape2@1.4.4", "coin@1.4-3", "caret@6.0-94", "pROC@1.18.5") # installs new versions Rcpp@1.0.13
 
 renv::install("tidyverse@2.0.0", "ggplot2@3.5.1", "cowplot@1.1.3", "patchwork@1.2.0") # installs new versions; if break install "data.table@1.15.4", "ggplot2@3.5.1", "RColorBrewer@1.1-3"
 
@@ -36,6 +36,9 @@ renv::install("package/seurat-object-4.1.3.tar.gz", rebuild = T)
 renv::install("package/irlba_2.3.5.1.tar.gz", rebuild = T)
 renv::install("package/harmony_1.0.1.tar.gz", rebuild = T)
 renv::install("uwot@0.2.2") 
+
+## for scrna
+renv::install("slingshot@2.12.0", "tradeSeq@1.18.0", "huayc09/SeuratExtend", "DelayedMatrixStats@1.26.0")
 
 ## updating
 # renv::update()

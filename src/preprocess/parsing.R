@@ -179,9 +179,13 @@ cyto_search <- function(x){
   
   x$`BCR-ABL1` = grepl("t\\(9;22\\)\\(q34.*;q11.*\\)", x$karyotype) 
   
+  ## other rare recurring translocations
   x$`Other_re` = grepl("t\\(1;3\\)\\(p36.*;q21.*\\)", x$karyotype) | grepl("t\\(1;22\\)\\(p13.*;q13.*\\)", x$karyotype) | grepl("t\\(3;5\\)\\(q25.*;q35.*\\)", x$karyotype) | grepl("t\\(8;16\\)\\(p11.*;p13.*\\)", x$karyotype) | grepl("t\\(10;11\\)\\(p13;(q14|q21)\\)", x$karyotype)| grepl("t\\(7;12\\)\\(p36.*;q13.*\\)", x$karyotype) | grepl("t\\(16;21\\)\\((p11|q24).*;q22.*\\)", x$karyotype) | grepl("inv\\(16\\)\\(p13.*;q24.*\\)", x$karyotype)
   
+  ## cytogenetic abnormalities: unbalanced clonal abnormalities
   x$`Other_abn` = grepl("((,|^)-5|(,|^)-7|(,|^)\\+8|(,|^)-17)", x$karyotype) | grepl("[adelt]\\((|.*;)5(|;.*)\\)\\((|.*;)q(.*|.*;.*)\\)", x$karyotype) | grepl("del\\(7\\)\\(q", x$karyotype) | grepl("[adelt]\\((|.*;)12(|;.*)\\)\\((|.*;)p(.*|.*;.*)\\)", x$karyotype) | grepl("[adel]\\(17\\)\\(p", x$karyotype) | grepl("i\\(17\\)\\(q", x$karyotype) | grepl("del\\(20\\)\\(q", x$karyotype)
+  
+  ## other abn2 includes all other unstated translocations and cytogenetic abnormalities
   
   return(x)
 }

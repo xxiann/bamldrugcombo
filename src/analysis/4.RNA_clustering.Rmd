@@ -1,0 +1,632 @@
+---
+title: "Clustering and gene signatures (Fig5a-d; SFig6a-d)"
+description: "unbiased clustering of top 3000 variably expressed genes for 341 samples"
+date: "30 dec 25"
+output: 
+  html_notebook:
+    toc: yes
+    toc_float: yes
+---
+
+- refer to src/preprocess/4.rnaseq_preprocess.R for clustering
+# runs on the older version to obtain the original clusters
+```{r}
+# previous versions
+# package.dir="package/"
+# renv::install(paste0(package.dir, "seurat-4.3.0.tar.gz"))
+# renv::install(paste0(package.dir, "seurat-object-4.1.3.tar.gz"))
+# renv::install(paste0(package.dir, "harmony_1.0.1.tar.gz"))
+# renv::install(paste0(package.dir, "Matrix_1.6-1.1.tar.gz"))
+# renv::install(paste0(package.dir, "irlba_2.3.5.1.tar.gz"))
+
+```
+
+# Loading libraries
+<https://cran.r-project.org/src/contrib/Archive/harmony/>
+<https://github.com/satijalab/seurat/releases>
+<https://github.com/satijalab/seurat-object/releases>
+```{r librariesAnalysis, echo = TRUE, message = FALSE, warning = FALSE}
+library(data.table)
+library(Matrix) # Matrix_1.6-1
+library(patchwork)
+library(rstatix)
+
+library(Seurat) # Seurat_4.3.0.1
+library(SeuratObject) # seurat-object-4.1.3
+library(harmony) ## must use 1.0.1 version
+
+set.seed(10)
+
+library(tidyverse)
+source("src/function/functions.R")
+```
+
+# Loading data
+- 341 oshu samples with RNA
+- columns: mutations 34:75, single drugs 76:122, combi 123:269
+
+```{r}
+raw_counts <- read.csv("data/oshu/rnaseq_rawcount.csv", check.names = F) # grch37
+rownames(raw_counts) <- raw_counts$GeneID
+gene <- raw_counts[,1:2]
+
+sampleinfo2 <- read.csv("data/oshu/rnaseq_sampleinfo.csv", check.names = F) 
+rownames(sampleinfo2) <- sampleinfo2$Sample_ID
+sampleinfo2$cohort <- factor(sampleinfo2$cohort)
+
+raw_counts <- raw_counts[,sampleinfo2$Sample_ID]
+```
+
+# clustering
+```{r}
+## PARAMETERS
+NFEATURES = 3000
+n=30 #npcs
+```
+
+## creating seurat object
+```{r}
+oshu <- CreateSeuratObject(counts = raw_counts, project = "Sample_ID", min.cells = 3, min.features = 200, meta.data = sampleinfo2, assay="RNA")
+
+oshu <- NormalizeData(oshu)
+oshu <- FindVariableFeatures(oshu, selection.method = "vst", nfeatures = NFEATURES)
+all.genes <- rownames(oshu)
+oshu <- ScaleData(oshu, features = all.genes, min.cells.to.block = 341)
+```
+
+## accounting for cohort difference
+```{r}
+oshu <- RunPCA(oshu, features = VariableFeatures(object = oshu),
+               assay = "RNA", seed.use = 42,
+               npcs = n, verbose = F)
+
+oshu <- RunHarmony(oshu, verbose = F, 
+				group.by.vars = c("cohort"),
+				reduction.use = "pca", assay.use = "RNA", reduction.save = "harmony")
+
+DimPlot(oshu, reduction = "pca", group.by = "cohort", pt.size = 1) +
+  stat_ellipse(aes(x = PC_1, y = PC_2, group = cohort, color = cohort), type = "norm")
+
+DimPlot(oshu, reduction = "harmony", group.by = "cohort", pt.size = 1) +
+  stat_ellipse(aes(x = harmony_1, y = harmony_2, group = cohort, color = cohort), type = "norm")
+# ggsave("plot/pca_ac.png", units="in", width=4, height=3, dpi=300)
+```
+
+## cluster the samples
+To make sure our Harmony integration is reflected in the data visualization, we still need to generate a UMAP derived from these harmony embeddings instead of PCs:
+```{r message=FALSE, warning=FALSE}
+oshu <- FindNeighbors(oshu, dims = 1:n, k.param = 20, reduction = "harmony")
+
+oshu <- FindClusters(oshu, algorithm = 4, random.seed = 0, verbose = F, resolution = 0.6)
+
+new.cluster.ids <- paste0("Cluster ", levels(oshu$RNA_snn_res.0.6), "\n(n=", table(oshu$RNA_snn_res.0.6), ")")
+levels(oshu$RNA_snn_res.0.6) <- new.cluster.ids
+
+oshu <- RunUMAP(oshu, dims = 1:n, n.components = 2L, n.neighbors = 30, seed.use = 86, verbose = F, reduction = "harmony")
+
+p <- DimPlot(oshu, reduction = "umap", group.by = "RNA_snn_res.0.6", pt.size = 2) +
+  labs(title = NULL) + theme_classic(base_size = 16) +
+  theme(legend.position = "none")
+LabelClusters(p, id = "RNA_snn_res.0.6",  fontface = "bold", color = "black", size = 5, bg.color = "white", bg.r = .15, repel = T)
+```
+
+## gene signature scores: inflammation
+<https://www.waltermuskovic.com/2021/04/15/seurat-s-addmodulescore-function/>
+
+- Warning: The following features are not present in the object: ENSG00000211675, ENSG00000211592, ENSG00000271503, ENSG00000261371, ENSG00000277632, ENSG00000277796, not searching for symbol synonyms (6)
+IGLC1, IGKC, CCL5, PECAM1, CCL3, CCL3L1
+```{r}
+## hngc gene symbols
+genes <- read.csv("data/baml/fullgene_baml_75vs75vs90_hngc.csv")
+genes <- genes[genes$gene_id %in% gene$GeneID,]
+rownames(genes) <- seq(1:nrow(genes))
+
+## getting corr ENSG from Symbol
+reference <- read.csv("data/inflammatory_sig_246.csv")
+inflammatory_sig_genes <- hgnc.index(reference$gene_id, genes)
+inflammatory_sig_genes <- genes[inflammatory_sig_genes$index,c("gene_id", "gene_name.x")] %>% na.omit(.) # 240
+colnames(inflammatory_sig_genes) <- c("GeneID", "Gene")
+
+saveRDS(inflammatory_sig_genes, "data/inflammatory_sig_genes.rds")
+
+oshu <- AddModuleScore(object = oshu, features = list(inflammatory_sig_genes$GeneID))
+colnames(oshu@meta.data)[ncol(oshu@meta.data)] <- "inflammatory_sig_genes"
+```
+
+## tbl 12: saving
+```{r message=FALSE, warning=FALSE}
+saveRDS(oshu, file="output/rds/oshu_seurat_obj.rds")
+
+cluster <- sampleinfo2 %>%
+  dplyr::select(Sample_ID,patientId,dbgap_subject_id,dbgap_rnaseq_sample,dbgap_dnaseq_sample, sampleid, cohort) %>%
+  mutate(cluster= oshu@active.ident)
+saveRDS(cluster, file="output/rds/oshu_cluster_info.rds")
+
+mat <- t(oshu@meta.data[,c(36:47,50:77)])
+top15 <- names(rev(sort(rowSums(mat, na.rm = T))))[1:15]
+oshu@meta.data %>%
+  select(4, 279, 5, 7, 13:26, top15, 271:277, 280) %>% 
+  write.csv("output/oshu_rnaseq_sampleinfo.csv", row.names = F)
+```
+
+# tbl 13: feature - association tests for cluster
+```{r}
+library(fastDummies)
+cluster <- readRDS("data/oshu/cluster_feb25.rds")
+sampleinfo <- read.csv("data/oshu/rnaseq_sampleinfo.csv")[c(1,4,5,11:14,33:74)] %>%
+  left_join(cluster[c(1,8)]) %>%
+  mutate(Age_Cat = cut(Age, labels=c("young", "middle", "older", "oldest"), breaks=c(-1, 21, 60, 75, 100)),
+         FAB_subtype= ifelse(FAB_subtype=="",NA,ifelse(FAB_subtype=="M0/M1", "M1", FAB_subtype))) %>%
+  # dummy_cols(select_columns = c("FAB_subtype", "Disease.status", "ELN2022", "specimenType", "Age_Cat"), ignore_na = T, remove_selected_columns = T) %>%
+  select(-Age) %>%
+  select(Sample_ID, sampleid, cluster, everything())
+
+cyto <- read.csv("../test_ida_2/data/oshu/oshu_cyto2.csv", check.names = F) %>% filter(Sample_ID %in% sampleinfo$sampleid) %>%
+  dplyr::rename(sampleid=Sample_ID) %>%
+  dplyr::select(1,6:17)
+sampleinfo <- left_join(sampleinfo, cyto)
+
+## initial testing for each category
+options(expressions = 500000) 
+res3 <- lapply(colnames(sampleinfo)[4:ncol(sampleinfo)], function(var) {
+  table_data <- table(sampleinfo[["cluster"]], sampleinfo[[var]])
+  test_result <- fisher.test(table_data, simulate.p.value = TRUE, B = 1e5)
+  return(test_result)
+})
+
+names(res3) <- colnames(sampleinfo)[4:ncol(sampleinfo)]
+
+res3 <- data.table::rbindlist(res3, idcol = "variable", fill = T) %>%
+  adjust_pvalue(p.col="p.value", output.col="p.adj", method="fdr") %>%
+  add_significance(p.col="p.adj", output.col="p.adj.signif")
+```
+
+- categorical
+```{r}
+## post hoc
+sampleinfo <- sampleinfo %>%
+  dummy_cols(select_columns = c("FAB_subtype", "Disease.status", "ELN2022", "specimenType", "Age_Cat"), ignore_na = T, remove_selected_columns = T)
+
+# dummy cluster
+sampleinfo2 <- sampleinfo["cluster"] %>%
+  dummy_cols(select_columns = "cluster", ignore_na = T, remove_selected_columns = T) 
+
+res <- lapply(colnames(sampleinfo)[4:ncol(sampleinfo)], function(var) {
+  
+  res1 <- lapply(colnames(sampleinfo2), function(cluster) {
+    ## crossing each cluster with each variable, compares each cluster with the rest
+    table_data <- table(sampleinfo2[[cluster]], sampleinfo[[var]])
+    test_result <- fisher_test(table_data, simulate.p.value = TRUE, B = 1e5, detailed = T)
+    return(test_result)
+  })
+  names(res1) <- colnames(sampleinfo2)
+  res1 <- data.table::rbindlist(res1, idcol = "cluster")
+  
+  return(res1)
+})
+names(res) <- colnames(sampleinfo)[4:ncol(sampleinfo)]
+
+res2 <- data.table::rbindlist(res, idcol = "variable", fill = T) %>%
+  adjust_pvalue(p.col="p", output.col="p.adj", method="fdr") %>%
+  add_significance(p.col="p.adj", output.col="p.adj.signif") 
+
+x <- reshape2::dcast(res2, cluster~variable, value.var = "p.adj.signif")
+
+write.csv(res2, "output/oshu_posthoc_fisher.csv", row.names = F)
+```
+
+- numerical factor
+```{r}
+cluster <- read.csv("output/oshu_rnaseq_sampleinfo.csv") %>%
+  select(1,2, 11:18, 34:41) %>%
+  pivot_longer(cols = 3:18, names_to = "variable",  values_to = "value", values_transform = list(value = as.numeric)) %>%
+  filter(!is.na(value)) 
+
+pwc <-  cluster %>%
+  group_by(variable) %>%
+  wilcox_test(value~seurat_clusters, detailed = T, p.adjust.method = "fdr", ref.group = "all") %>%
+  add_significance(p.col="p", output.col="p.signif") 
+
+pwc <-  cluster %>%
+  group_by(variable) %>%
+  wilcox_effsize(value~seurat_clusters, ref.group = "all") %>%
+  left_join(pwc, ., by=c("variable", ".y.", "group1", "group2", "n1", "n2"))
+
+write.csv(pwc, "output/oshu_posthoc_pwc.csv", row.names = F)
+```
+
+
+# tbl 14: differential gene expression
+```{r}
+roc.markers <- FindAllMarkers(oshu, only.pos = FALSE, min.pct = 0.5, logfc.threshold = -Inf, random.seed = 1, test.use = 'roc', return.thresh = 0, verbose=T) %>%
+  left_join(., gene, by=c("gene"="GeneID"))
+
+write.csv(roc.markers, "output/oshu_rnaseq_markers_roc.csv", row.names = F)
+```
+
+# tbl 15: gene set enrichment analysis: 
+- min.diff.pct -> Pre-filter features whose detection percentages across the two groups are similar (within 0.25)
+- <https://nbisweden.github.io/workshop-scRNAseq/labs/compiled/seurat/seurat_05_dge.html#Gene_Set_Enrichment_Analysis_(GSEA)>
+- obtaining the full gene list between cluster and the rest for GSEA - no arbitrary definition in what is significant gene
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+MARKER <- read.csv("output/oshu_rnaseq_markers_roc.csv") %>%
+  mutate(rank.col = sign(avg_log2FC) * power)
+
+## loading database for GSEA
+hall_set <- load_gs(category = "H", genes = genes$gene_id)
+
+x <- lapply(1:6, function(i){
+  tmp <- MARKER[MARKER$cluster==i,] 
+  
+  original_gene_list <- tmp[["rank.col"]] 
+  names(original_gene_list) <- tmp[["gene"]]
+  gene_list<-na.omit(original_gene_list)
+  gene_list = sort(gene_list, decreasing = TRUE)
+  
+  gse <- clusterProfiler::GSEA(gene_list, TERM2GENE = hall_set[,c("gs_name", "ensembl_gene")], seed = TRUE, verbose = F, minGSSize=10,  pvalueCutoff = 0.25)
+  
+  gse@result$Description <- str_replace_all(gse@result$Description, c("^[^_]*_"="", "_"=" "))
+  
+  x <- as.data.frame(unique(subset(hall_set, select=-c(ensembl_gene, gene_symbol))) )
+  gse@result <- left_join(gse@result, x, by= c("ID"="gs_name"))
+  
+  gse@result
+})
+
+df_long = data.frame()
+for (i in 1:6){
+  df <- x[[i]][,c(1,2,5,6,7)] %>%
+    mutate(cluster = i, sign_NES = ifelse(sign(NES)==1, "Pos", "Neg"))
+  df_long <- rbind(df_long, df)
+}
+
+write.csv(df_long, "output/oshu_GSEA_hall_cluster.csv", row.names = F)
+
+```
+
+# plots
+```{r message=FALSE}
+library(ComplexHeatmap)
+library(RColorBrewer)
+library(circlize)
+library(ggpubr)
+library(ggrepel)
+library(survival)
+library(survminer)
+
+source("src/function/colour.R")
+
+oshu <- readRDS("output/rds/oshu_seurat_obj.rds")
+df_long <- read.csv("output/oshu_GSEA_hall_cluster.csv")
+```
+
+# fig 5
+## 5a: umap
+```{r}
+p <- DimPlot(oshu, reduction = "umap", group.by = "RNA_snn_res.0.6", pt.size = 2) + 
+  labs(title = NULL) + theme_classic(base_size = 16) +
+  theme(legend.position = "none")
+LabelClusters(p, id = "RNA_snn_res.0.6",  fontface = "bold", color = "black", size = 5, bg.color = "white", bg.r = .15, repel = T)
+
+ggsave("plot/fig5/main_5a.png", units="in", width=7, height=5, dpi=600)
+```
+
+## 5b: heatmap
+```{r}
+oshu_SI <- oshu@meta.data %>%
+  mutate(cluster = seurat_clusters,
+         AMLFusion = factor(outcome, levels=fusion.order),
+         Disease.status = factor(Disease.status, levels=disease.order3, labels= c("Diagnosis", "Relapse", "Residual", "PostChemo", "Unknown")),
+         ELN2022 = factor(ELN2022, levels=eln.col.order)) %>%
+  arrange(Disease.status, ELN2022, FAB_subtype)
+
+# Mutation matrix
+mat <- t(oshu_SI[,c(36:47,50:77)])
+top15 <- names(rev(sort(rowSums(mat, na.rm = T))))[1:15]
+mat <- mat[top15,]
+colnames(mat) <- oshu_SI$Sample_ID
+
+na_mask <- data.frame(col = 1:341,
+                      na = colSums(is.na(mat)),
+                      count = colSums(mat, na.rm = T) ) %>%
+  filter(na>0) %>%
+  arrange(na, count)
+na_mask <- na_mask$col
+
+clusters <- oshu@active.ident
+color_list <- ggplotColours(n=6)
+
+col_ha = columnAnnotation(
+  Cluster=oshu_SI$cluster,
+  Disease_status = oshu_SI$Disease.status,
+  FAB_subtype=oshu_SI$FAB_subtype,
+  ELN2022=oshu_SI$ELN2022,
+  AMLFusion=oshu_SI$AMLFusion,
+  col=list(Cluster=setNames(color_list, c(1:6)),
+           Disease_status = disease.col3,
+           FAB_subtype=subtype.col2,
+           ELN2022=eln.col,
+           AMLFusion=fusion
+           ),
+  na_col = "grey65",
+  annotation_name_side = "left")
+
+# OncoPrint for top mutations
+mat2=mat
+mat2[is.na(mat2)|mat2==0] = ""
+mat2[mat2=="TRUE"] = "MUT;"
+col = c("MUT" = "darkblue")
+alter_fun = list(
+    background = alter_graphic("rect", fill = "grey90",
+                               horiz_margin = unit(.2, "pt"), vertical_margin = unit(.2, "pt")),   
+    MUT = alter_graphic("rect", fill = col["MUT"], horiz_margin = unit(.2, "pt"), vertical_margin = unit(.2, "pt"))
+)
+heatmap_legend_param = list(title = "Mutation", at = c("MUT"), 
+        labels = c("Mutation"))
+
+op <- oncoPrint(mat2, pct_gp = gpar(fontsize = 11),
+    alter_fun = alter_fun, col = col, 
+    remove_empty_columns = FALSE, remove_empty_rows = TRUE,
+    pct_side = "right", row_names_side = "left") 
+
+x <- ComplexHeatmap::draw(op)
+col_dend = column_order(x)
+col_dend = c(col_dend[!col_dend %in% na_mask], setNames(na_mask,na_mask))
+
+#########################################
+mat[is.na(mat)] = "NA;"
+mat[mat=="FALSE"] = "NEG;"
+mat[mat=="TRUE"] = "MUT;"
+col = c("MUT" = "darkblue",
+        "NEG" = "grey90",
+        "NA" = "grey75")
+alter_fun = list(
+    background = alter_graphic("rect", fill = "grey75", horiz_margin = unit(.2, "pt"), vertical_margin = unit(.2, "pt")),   
+    MUT = alter_graphic("rect", fill = col["MUT"], horiz_margin = unit(.2, "pt"), vertical_margin = unit(.2, "pt")),
+    NEG = alter_graphic("rect", fill = col["NEG"], horiz_margin = unit(.2, "pt"), vertical_margin = unit(.2, "pt")),
+    `NA` = alter_graphic("rect", fill = col["NA"], horiz_margin = unit(.2, "pt"), vertical_margin = unit(.2, "pt"))
+)
+
+heatmap_legend_param = list(title = "Mutation", at = c("MUT", "NEG", "NA"), 
+        labels = c("Present", "Absent", "NA"))
+
+op <- oncoPrint(mat, 
+    column_names_gp = gpar(fontsize = 12),pct_gp = gpar(fontsize = 12),
+    alter_fun = alter_fun, col = col, column_order = col_dend, column_split = oshu_SI$cluster,
+    remove_empty_columns = FALSE, remove_empty_rows = TRUE,
+    pct_side = "right", row_names_side = "left", bottom_annotation = col_ha,               
+    heatmap_legend_param = heatmap_legend_param, 
+    top_annotation = HeatmapAnnotation(cbar = anno_oncoprint_barplot(type = c("MUT"))),
+    right_annotation = rowAnnotation(rbar = anno_oncoprint_barplot(type = c("MUT"))),
+    pct_include = c("MUT"),
+    height = unit(0.5 * nrow(mat), "cm")
+    )
+
+# Cell state heatmap
+mat <- t(oshu_SI[,c("LSPC.Quiescent", "LSPC.Primed.Top100", "LSPC.Cycle.Top100", "GMP.like.Top100", "ProMono.like.Top100", "Mono.like.Top100", "cDC.like.Top100")])
+hm <- Heatmap(mat, rect_gp = gpar(col = "white", lwd = 0.2), na_col = "grey90",
+    col = colorRamp2(c(-4, -1, 0, 1, 4), c("darkblue", "blue", "white","red", "darkred")), 
+    row_names_side = "left", show_column_names = F, cluster_rows = F, cluster_columns = F,
+    row_labels = c("LSPC-Quiescent", "LSPC-Primed", "LSPC-Cycle", "GMP-like", "ProMono-like", "Mono-like", "cDC-like"),
+    column_split = oshu_SI$cluster, heatmap_legend_param = list(title = "z score"),
+    height = unit(3.5, "cm"))
+
+# Percent heatmap
+library(viridis)
+mat <- t(oshu_SI[,c(19:26)])
+rownames(mat) <- gsub("percent","%", rownames(mat))
+hm1 <- Heatmap(mat, rect_gp = gpar(col = "white", lwd = 0.2),
+    col = viridis(10), na_col = "grey75", 
+    row_names_side = "left", show_column_names = F, cluster_rows = F, cluster_columns = F,
+    column_split = oshu_SI$cluster, heatmap_legend_param = list(title = "Percent"),
+    height = unit(4, "cm"))
+
+ht_list = op  %v% hm1 %v% hm
+
+png("plot/fig5/main_5b.png", width=45, height=27, units="cm", res=600)
+ComplexHeatmap::draw(ht_list, heatmap_legend_side = "bottom", annotation_legend_side = "bottom", merge_legend=T)
+dev.off()
+```
+
+## 5c: bubble plot
+```{r}
+df_long %>%
+  filter(p.adjust < 0.05) %>%
+  group_by(ID) %>%
+  mutate(n = n(), Description=str_trunc(Description, 95),
+         cluster = factor(cluster, levels=c(1,3,5,2,4,6)),
+         order = median(p.adjust)
+         ) %>%
+  filter(n>4) %>%
+ggplot(., aes(x = cluster, y = reorder(Description, -order), size = -log10(p.adjust), fill = NES)) + 
+  geom_point(shape = 21) +
+  scale_y_discrete(labels = label_wrap_gen(50)) +
+  scale_size_continuous(range = c(1, 8), breaks = c(0, 1, 2, 3)) +
+  scale_fill_gradientn(colours = pals::coolwarm(100)) +
+  ylab("Hallmark Pathway") +
+  xlab("Clusters") +
+  theme_classic(base_size = 12) +
+  theme(axis.text = element_text(color="black"))
+
+ggsave("plot/fig5/main_5c.png", units="in", width=7, height=7, dpi=600) 
+```
+
+## 5d: umap & box
+
+```{r}
+## umap
+FeaturePlot(oshu, reduction = "umap", features = "inflammatory_sig_genes", pt.size = 2, order=TRUE)  + 
+  scale_colour_gradientn(colours = rev(brewer.pal(n = 11, name = "RdBu")), name = "Inflammatory\nScore") + 
+  ggtitle("") +
+  theme(legend.position = "inside", 
+        legend.position.inside = c(0.8, 0.8), 
+        legend.text = element_text(size=10), 
+        legend.key.height = unit(0.5, "cm"),
+        legend.title = element_text(size=12), 
+        aspect.ratio = 0.7)
+
+ggsave("plot/fig5/main_5d_left.png", units="in", width=7, height=5, dpi=600)
+```
+
+```{r}
+## boxplot of inflammatory score against clusters with KW
+x <- data.frame(cluster = oshu@meta.data$seurat_clusters, score = oshu@meta.data$inflammatory_sig_genes)
+
+ggboxplot(x, x = "cluster", y = "score", fill = "cluster", 
+        legend ="none", alpha=0.7,
+        xlab="Clusters", ylab="Inflammatory Score", 
+        add = "jitter", add.params = list(alpha = 0.6)) +
+  scale_fill_manual(values=color_list) + 
+  stat_compare_means(method="kruskal", label.x = 1.3) + 
+  theme(aspect.ratio = 1.4)
+
+ggsave("plot/fig5/main_5d_right.png", units="in", width=5, height=4.8, dpi=600)
+
+```
+
+# supp fig 6
+## 6a: kaplan meier survival curve
+```{r}
+# using unique patients; taking the sample with the earlier point
+df <- oshu@meta.data[,c("Sample_ID","patientId", "Disease.status", "overallSurvival", "isDead", "seurat_clusters")] %>%
+  arrange(Sample_ID) %>%
+  group_by(patientId) %>%
+  slice_head(n=1)
+
+m.fit <- survfit(Surv(time=overallSurvival, event=isDead, type="right") ~  seurat_clusters, data = df)
+
+m.surv <- ggsurvplot(m.fit, data = df, pval=F, 
+                     break.time.by = 250,
+                     ggtheme=theme_classic2(),
+                     legend.labs = paste("Cluster", 1:6),
+                     risk.table = T,
+                     legend.title = "", xlab = "Time (Day)",
+                     log.rank.weights = "1" #log-rank test
+                     ) 
+
+m.surv[[1]] / m.surv[[2]] + plot_layout(heights = c(0.8,0.2))
+
+ggsave("plot/suppfig6/supp_6a.png", units="cm", width=20, height=20, dpi = 600)
+
+pairwise_survdiff(Surv(time=overallSurvival, event=isDead, type="right") ~  seurat_clusters, data = df, p.adjust.method = "none")
+```
+
+## 6b: pointrange, gene sig
+```{r}
+gene_sig2  <- oshu@meta.data[,c("LSPC.Quiescent", "LSPC.Primed.Top100", "LSPC.Cycle.Top100", "GMP.like.Top100", "ProMono.like.Top100", "Mono.like.Top100", "cDC.like.Top100", "seurat_clusters")] %>%
+  pivot_longer(cols = 1:7, names_to = "Cell.Type") %>%
+  mutate(
+    Cell.Type = factor(
+      Cell.Type, levels=(c("LSPC.Quiescent", "LSPC.Primed.Top100", "LSPC.Cycle.Top100", "GMP.like.Top100", "ProMono.like.Top100", "Mono.like.Top100", "cDC.like.Top100")), 
+      labels=(c("cDC-like", "Mono-like", "ProMono-like", "GMP-like", "LSPC-Cycle", "LSPC-Primed", "LSPC-Quiescent"))
+      ),
+    clusters = factor(seurat_clusters, levels=c(6,5,4,3,2,1))
+  )
+
+ggplot(gene_sig2, aes(x=Cell.Type, y=value, color=clusters)) +
+  scale_color_manual(values=setNames(color_list, 1:6), breaks = c(1:6), name = "Cluster") +
+  geom_hline(yintercept = 0) +
+  stat_summary(fun.data = 'mean_sdl', #orientation = "y", 
+               geom = "pointrange", position=position_dodge(width=0.5))  +
+  labs(y="Standardised Gene Signature Score", x="") + 
+  theme_classic(base_size = 15) + 
+  theme(aspect.ratio = 1.4,
+        legend.position = "top", 
+        axis.text.y = element_text(colour = c(rep("navy",3), "black", rep("firebrick",3)))
+        ) + 
+  stat_compare_means(
+    aes(x=Cell.Type, y=value, group=clusters), 
+    method = "kruskal.test", 
+    label = "p.signif", coord.flip = TRUE, inherit.aes = F) +
+  coord_flip()
+
+ggsave("plot/suppfig6/supp_6b.png", units="in", width=6, height=8, dpi=600)
+```
+
+## 6c: DEG
+```{r}
+plot <- read.csv("output/oshu_rnaseq_markers_roc.csv")
+log2fc_thres = 0.25
+power_thres = 0.4
+
+# Preprocess data
+plot <- plot %>%
+  mutate(
+    sig = ifelse(power > 0.5, T, F),
+    signed_power = sign(avg_log2FC) * power
+  ) %>%
+  group_by(cluster, sig, sign(avg_log2FC)) %>%
+  mutate(
+    rank = rank(-abs(avg_log2FC)),
+    label_up = if_else(sig & rank <= 10 & sign(avg_log2FC) == 1, Gene, NA_character_),
+    label_down = if_else(sig & rank <= 10 & sign(avg_log2FC) == -1, Gene, NA_character_)
+  ) %>%
+  arrange(signed_power)
+
+# Jitter position for points
+pos <- position_jitter(width = 0.3, height = 0, seed = 2)
+
+# Create plot
+ggplot(plot, aes(x = cluster, y = avg_log2FC)) +
+  geom_point(aes(color = signed_power, alpha = power > 0.5), 
+             position = pos, stroke = 0.3, size = 2) +
+  scale_color_gradientn(colors = c("#3B4CC0", "grey", "#B40426"), values = c(0, 0.3, 0.7, 1)) +
+  scale_alpha_manual(values = c(`TRUE` = 1, `FALSE` = 0.3)) +
+
+  # Label top up- and down-regulated genes
+  geom_text_repel(aes(label = label_up), position = pos, seed = 123,
+                  max.overlaps = 20, color = "black", size = 8 / ggplot2:::.pt,
+                  ylim = c(0.2, 3.6), direction = "both", box.padding = 0.5,
+                  point.padding = 0.25, min.segment.length = 0) +
+  geom_text_repel(aes(label = label_down), position = pos, seed = 123,
+                  max.overlaps = 20, color = "black", size = 8 / ggplot2:::.pt,
+                  ylim = c(-3.6, -0.2), direction = "both", box.padding = 0.5,
+                  point.padding = 0.25, min.segment.length = 0) +
+
+  # Add horizontal lines and cluster labels
+  geom_hline(yintercept = c(-0.58, -0.25, 0, 0.25, 0.58), 
+             linetype = c("solid", "dashed", "solid", "dashed", "solid")) +
+  geom_label(data = data.frame(x = 1:6, label = paste("Cluster", 1:6)),
+             aes(x = x, y = 0, label = label), fill = "white",
+             size = 10 / ggplot2:::.pt, alpha = 1) +
+
+  # Theming
+  theme_pubr() +
+  labs(y = "Average Log2 Fold Change", x = NULL) +
+  ylim(-3, 3.6) +
+  theme(
+    aspect.ratio = 0.6,
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    axis.line.x = element_blank(),
+    axis.text = element_text(size = 10),
+    text = element_text(size = 10),
+    legend.position = "bottom",
+    legend.text = element_text(size = 10)
+  )
+
+ggsave("plot/suppfig6/supp_6c.png", units="in", width=11, height=8, dpi=600)
+```
+
+## 6d: trend curves
+```{r}
+df <- oshu@meta.data[,c("Sample_ID", "seurat_clusters", "inflammatory_sig_genes", "LSPC.Quiescent", "LSPC.Primed.Top100", "LSPC.Cycle.Top100", "GMP.like.Top100", "ProMono.like.Top100", "Mono.like.Top100", "cDC.like.Top100")] %>%
+  pivot_longer(cols=4:10, names_to = "cell_type", values_to = "cell_type_score") %>%
+  mutate(cell_type = factor(cell_type, levels=cell.type.order, labels=cell.type.name)) 
+
+
+## smooth line plot of cell maturation score against inflammatory score 
+ggplot(df, aes(x=inflammatory_sig_genes, y=cell_type_score, color=cell_type)) +
+  stat_smooth(formula = y ~ s(x, bs = "cs"), method = "gam", se = F) +
+  labs(x="Inflammatory Score", y="Cell Maturation Score", color="Cell Maturation Type") +
+  scale_color_manual(values = hierarchy_colors) +
+  theme_classic2()
+
+ggsave("plot/suppfig6/supp_6d.png", units="in", width=7, height=5, dpi=300)
+```
+
+# session info
+```{r}
+sessionInfo()
+```

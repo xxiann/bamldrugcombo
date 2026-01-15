@@ -1,0 +1,264 @@
+---
+title: "Integrating Proteomics BAML/PNNL"
+description: "looking at DEG of genes detected in both proteomics and transcriptomics level"
+date: "30 dec 25"
+output: 
+  html_notebook:
+    theme: united
+    toc: yes
+    toc_float: yes
+---
+
+# loading libraries
+```{r message=FALSE, include=FALSE}
+library(rstatix)
+library(reshape2)
+library(ggpubr)
+library(ggrepel)
+library(tidyverse)
+library(ROTS)
+
+library(ComplexHeatmap)
+```
+
+# integrating RNA and proteomics
+- selecting the patients that have both data available
+- using:
+  RNA: VST transformed values 
+  Proteomics: Corrected global gene proteomics from PNNL (TMT data processing)
+
+<https://rdrr.io/bioc/GDCRNATools/src/R/gdcVoomNormalization.R>
+<https://bioconductor.org/packages/devel/bioc/vignettes/ROTS/inst/doc/ROTS.pdf>
+<https://academic.oup.com/nar/article/44/1/e1/2499676?login=false>
+
+# loading data
+
+- 111 samples
+
+ 1  2  3  4  5  6 
+32 22 17 20 11  9 
+
+- 60 - inflam_low; 51 inflam_high
+```{r}
+inflammatory_sig_genes <- readRDS("data/inflammatory_sig_genes.rds")
+
+## sampleinfo
+oshu_metadata <- read.csv("data/oshu/global_proteomics_metadata.csv") %>%
+  mutate(id = gsub("PTRC_exp10_", "", Aliquot.Submitter.ID),
+         clusters = cluster,
+         cluster = ifelse(cluster %in% c(1,3,5), "inflam_low", "inflam_high")) %>%
+  arrange(cluster, Sample_ID)
+rownames(oshu_metadata) <- oshu_metadata$Sample_ID
+
+## protein - 7084
+global_proteomics <- read.csv("data/oshu/global_proteomics.csv", check.names = F, row.names = 1) %>%
+  select(oshu_metadata$Sample_ID)
+
+## transcript - 24751
+expr_normalized <- readRDS("data/oshu/rnaseq_vst.rds") %>%
+  slice_head(n=1, by=Gene) # duplicated genes are like SCARNA--; SNORA--; SNORD--; snoU--; U--; Y_RNA
+gene_id <- setNames(expr_normalized$GeneID, expr_normalized$Gene)
+rownames(expr_normalized) <- expr_normalized$Gene
+expr_normalized <- expr_normalized[, oshu_metadata$Sample_ID]
+
+## common genes - 6788
+x <- intersect(rownames(global_proteomics), rownames(expr_normalized)) 
+global_proteomics <- global_proteomics[x,]
+expr_normalized <- expr_normalized[x,]
+```
+
+# tbl 22: correlation between transcript and protein abundance per gene
+- 6788 common
+```{r}
+rna.data <- expr_normalized %>% 
+  rownames_to_column("Gene") %>%
+  reshape2::melt(variable.names = "Sample_ID", value.name = "GeneExp", id.vars = "Gene") %>%
+  mutate(GeneID = gene_id[Gene])
+
+prot.data <- global_proteomics %>% 
+  rownames_to_column("Gene") %>%
+  reshape2::melt(variable.names = "Sample_ID", value.name = "LogRatio", id.vars = "Gene")
+
+corr_df <- inner_join(rna.data, prot.data) # 6788 common genes
+corr_df <- corr_df %>%
+  group_by(GeneID, Gene) %>%
+  cor_test(vars = "GeneExp", vars2 = "LogRatio", method = "spearman")
+write.csv(corr_df, "output/oshu_corr_global_prot_rna_per_gene.csv", row.names = F)
+```
+
+# running differential gene
+```{r}
+proteomics <- ROTS(data = global_proteomics, groups = oshu_metadata$cluster, B = 1000, K = 500, seed = 1234)
+
+transcriptomics <- ROTS(data = expr_normalized, groups = oshu_metadata$cluster, B = 1000, K = 500, seed = 1234)
+
+transcript <- data.frame(Gene = x,
+                         ROTS_statistic = transcriptomics$d,
+                         logfc = transcriptomics$logfc,
+                         pvalue = transcriptomics$pvalue,
+                         FDR = transcriptomics$FDR)
+
+protein <- data.frame(Gene = x,
+                      ROTS_statistic = proteomics$d,
+                      logfc = proteomics$logfc,
+                      pvalue = proteomics$pvalue,
+                      FDR = proteomics$FDR)
+
+write.csv(transcript, "output/supp/inflam_DEG_transcript.csv", row.names = F)
+write.csv(protein, "output/supp/inflam_DEG_protein.csv", row.names = F)
+```
+
+# tbl 23: integrating the outcomes together
+```{r}
+corr_df <- read.csv("output/oshu_corr_global_prot_rna_per_gene.csv")
+transcript <- read.csv("output/supp/inflam_DEG_transcript.csv")
+protein <- read.csv("output/supp/inflam_DEG_protein.csv")
+
+# Merge data on GeneID
+data <- merge(transcript, protein, by = "Gene", suffixes = c("_rna", "_prot"))
+
+quantile(data$logfc_prot)
+quantile(data$logfc_rna)
+
+thres_prot <- 0.58 # Threshold for proteomics 
+thres_rna <- 1  # Threshold for transcriptomics
+
+# Classify genes
+data <- data %>%
+  mutate(
+    category = case_when(
+      FDR_rna >= 0.05 | FDR_prot >= 0.05 ~ "C5.NS", # insignificant hits based on FDR
+      logfc_rna >=  thres_rna & logfc_prot >=  thres_prot  ~ "C3.\u2191rna \u2191protein",
+      logfc_rna <= -thres_rna & logfc_prot <= -thres_prot  ~ "C7.\u2193rna \u2193protein",
+      logfc_rna >=  thres_rna & logfc_prot <= -thres_prot  ~ "C1.\u2191rna \u2193protein",
+      logfc_rna >=  thres_rna & between(logfc_prot, -thres_prot, thres_prot) ~ "C2.\u2191rna NS protein",
+      between(logfc_rna, -thres_rna, thres_rna) & logfc_prot <= -thres_prot  ~ "C4.NS rna \u2193protein",
+      between(logfc_rna, -thres_rna, thres_rna) & logfc_prot >=  thres_prot  ~ "C6.NS rna \u2191protein",
+      logfc_rna <= -thres_rna & between(logfc_prot, -thres_prot, thres_prot) ~ "C8.\u2193rna NS protein",
+      logfc_rna <= -thres_rna & logfc_prot >=  thres_prot  ~ "C9.\u2193rna \u2191protein",
+      .default = "C5.NS"
+    )
+  ) %>%
+  separate_wider_delim(category, delim = ".", names = c("category_no", "category_name"), cols_remove = T)
+
+data %>%
+ mutate(sig = FDR_rna < 0.05 & FDR_prot < 0.05) %>%
+ select(category_no, sig) %>%
+ table()
+
+```
+
+## [not included in the table; replaced with elastic net regression] checking correlation of concordant genes C3 & C7
+
+### concordance of 261 genes
+
+- range of spearman correlation coefficient between transcript and proteins: 0.05 to 0.9 
+
+```{r}
+selected_gene <- data[data$category_no %in% c("C3", "C7"),]
+
+hist(corr_df$cor[corr_df$Gene %in% selected_gene$Gene], breaks = 50)
+# range(corr_df$cor[corr_df$Gene %in% selected_gene$Gene])
+
+selected_gene <- selected_gene %>%
+  filter(Gene %in% corr_df$Gene[corr_df$cor >= 0.5]) # 261->258
+```
+
+### correlation between protein abundance/ gene expression (of selected gene) with combination
+```{r}
+## overall correlation with proteomics
+x <- as.data.frame(t(global_proteomics)) %>%
+  select(selected_gene$Gene)
+prot.data <- .run.cor(x, oshu_metadata[158:304], method = "spearman", min.n=5)
+write.csv(prot.data, "output/supp/corr_prot_combi_all.csv", row.names = F)
+
+## overall correlation with transcriptomics
+x <- as.data.frame(t(expr_normalized)) %>%
+  select(selected_gene$Gene)
+rna.data <- .run.cor(x, oshu_metadata[158:304], method = "spearman", min.n=5)
+write.csv(rna.data, "output/supp/corr_rna_combi_all.csv", row.names = F)
+
+## selecting for significantly correlated genes
+temp <- inner_join(rna.data[c(1,2,3,6,7,8,10,11)], 
+                   prot.data[c(1,2,3,6,7,8,10,11)], 
+                   by=c("Group", "Combination"), 
+                   suffix = c(".R", ".P"))  %>%
+  filter(p.adj.signif.R != "ns" & p.adj.signif.P != "ns") %>%
+  mutate(in_inflam = Group %in% inflammatory_sig_genes$Gene)
+
+write.csv(temp, "output/supp/corr_prot_rna_combi.csv", row.names = F)
+```
+
+## saving 
+```{r}
+# temp <- read.csv("output/supp/corr_prot_rna_combi.csv") # significant correlation w drug sens - 35
+
+data <- data %>%
+  group_by(category_no) %>%
+  mutate(
+    label = paste0("n=",n()),
+    in_inflam = Gene %in% inflammatory_sig_genes$Gene, # inflam related: 171
+    sig_corr_protrna = Gene %in% corr_df$Gene[corr_df$cor >= 0.5] # 1846
+    # sig_corr_dss = Gene %in% temp$Group # sig corr w combi response - 154
+         ) %>% 
+  ungroup() %>%
+  arrange(category_no, -abs(logfc_prot), -abs(logfc_rna))
+  
+write.csv(data, "output/oshu_rna_prot_overlap.csv", row.names = F, fileEncoding = "UTF-8")
+```
+
+
+# plots
+
+## fig 7d: integrating rna and protein
+```{r}
+data <- read.csv("output/oshu_rna_prot_overlap.csv") %>%
+  mutate(label2 = ifelse(sig_corr_dss & category_no == "C7", Gene, ifelse(in_inflam & category_no == "C3", Gene, NA)) )
+
+labels_ <- data[,c(10,12,11)] %>% 
+  unique() %>% 
+  as.data.frame() %>%
+  arrange(category_no) 
+labels_ <- rbind(c("C1", "n=0", "\u2191rna \u2193protein"), labels_)
+labels_ <- rbind(labels_, c("C9", "n=0", "\u2193rna \u2191protein"))
+
+labels_$x <- c(-2,0,2,-2,0,2,-2,0,2)
+labels_$y <- c(5,5,5,0,0,0,-5,-5,-5)
+
+data$category_name <- factor(data$category_name, levels = c(labels_$category_name))
+
+table(data$category_no)
+
+colors <- c("#377EB8","#984EA3","#E41A1C","grey","#4DAF4A","#A65628","gold","darksalmon", "#FF7F00")
+
+# Plot
+ggplot(data, aes(x = logfc_prot, y = logfc_rna, colour = category_name, label= label2)) +
+  geom_point(size = 2, alpha=.7) +
+  scale_color_manual(values = colors, name = "Category") +
+  geom_hline(yintercept = c(-1,1), linetype = "dashed", color = "gray30") +
+  geom_vline(xintercept = c(-0.58,0.58), linetype = "dashed", color = "gray30") +
+  xlim(c(-2.1,2.2)) + ylim(c(-5,5)) +
+  stat_cor(mapping = aes(x = logfc_prot, y = logfc_rna), method = "spearman", inherit.aes = F, label.y = -4) +
+  geom_text_repel(min.segment.length = 0, box.padding=.5,color="black", size=3, max.overlaps = 30, force = 0.5) +
+  labs(
+    x = "Log2 Fold Change of Protein",
+    y = "Log2 Fold Change of RNA"
+  ) +
+  theme_classic(base_size = 14, base_line_size = 0) +
+  theme(
+    legend.position = "right",
+    plot.title = element_text(hjust = 0.5),
+    aspect.ratio = 1,
+    panel.border = element_rect(fill=NA, color = "black", linewidth = 1)
+  ) +
+  geom_text(data=labels_[c(3,7), ], mapping=aes(x,y,label=label), color="gray40") +
+  guides(color = guide_legend(override.aes = list(size=3, alpha=1) ) ) 
+
+ggsave("plot/fig7/main_fig7d.png", width = 7, height = 5, dpi = 600)
+```
+
+
+# session info
+```{r}
+sessionInfo()
+```

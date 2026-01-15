@@ -1,0 +1,966 @@
+---
+title: "overview to ex vivo combination response data ()"
+description: "exploratory analysis of combi response"
+date: "2 jan 26"
+output: 
+  html_notebook:
+    theme: united
+    toc: yes
+    toc_float: yes
+---
+
+# libraries
+```{r message=FALSE, warning=FALSE}
+library(tidyverse)
+library(rstatix)
+library(data.table)
+
+library(ComplexHeatmap)
+library(RColorBrewer)
+library(circlize)
+library(dendsort)
+library(grid)
+
+library(ggpubr)
+library(ggrepel)
+
+set.seed(10)
+
+source("src/function/colour.R")
+source("src/function/functions.R")
+source("src/function/loading_data.R")
+listofnames <- init_drugnames()
+```
+
+# loading data
+```{r}
+matrix <- read.csv("data/oshu/sampleinfo_dss.csv", check.names = F)
+
+mono <- read.csv("data/oshu/DSS_mono.csv") 
+
+drugdet <- read.csv("data/oshu/mono_detail.csv")
+listofdrug <- drugdet[!duplicated(drugdet$Drug),] %>%
+  filter(! Drug %in% c("Arsenic Trioxide", "Quizartinib - NVP-TAE684"))
+
+combi <- read.csv("data/oshu/DSS_combi.csv") 
+
+combidet <- read.csv("data/oshu/combi_detail.csv")
+listofcombi <- combidet[!duplicated(combidet$combo),]
+```
+
+# sample demographics
+
+1. General summary of oshu data | Sample mapping
+
+## suppfig1a: circos/samples overlapping between datasets
+
+```{r}
+matrix <- read.csv("data/oshu/sampleinfo_dss.csv")
+oshu_SI <- matrix %>% 
+  filter(Disease.status != "Healthy") %>%
+  mutate(cohort = ifelse(grepl("S", Sample_ID), "BeatAML", "New")) %>% # sample membership
+  select(Sample_ID, patientId, cohort) %>%
+  arrange(patientId, cohort) %>%
+  group_by(patientId) %>%
+  mutate(sample_no = row_number(), 
+         total_no = n(), # total no of samples
+         type = n_distinct(cohort), # if the sample is in either cohort
+         patient_existing = if_else(any(cohort == "BeatAML"), "BeatAML", "New") ) %>%
+  ungroup() 
+
+# distribution of samples in cohorts: type = 1 - unique to cohort, type = 2 - exist in both cohorts
+oshu_SI %>% # sample level
+  select(cohort, patient_existing, type) %>%
+  table()
+
+oshu_SI %>% # patient level
+  distinct(patient_existing, patientId, type) %>%
+  select(patient_existing, type) %>%
+  table() 
+```
+
+, , type = 1
+
+         patient_existing
+cohort    BeatAML New
+  BeatAML     325   0
+  New           0 148
+
+, , type = 2
+
+         patient_existing
+cohort    BeatAML New
+  BeatAML      59   0
+  New          64   0
+
+                type
+patient_existing   1   2
+         BeatAML 303  49
+         New     122   0
+  
+
+## Table1: Sample Demographics
+
+```{r}
+drugcombo <- read.csv("data/oshu/oshu_sample_mapping.csv")
+mut <- read.csv("data/oshu/mutation.csv")
+top5 <- names(rev(sort(colSums(mut[,c(2:25,28:73)], na.rm = T))))[1:5]
+
+df <- read.csv("data/oshu/clinical_summary.csv") |>
+  left_join(mut[, c("Sample_ID", top5)]) |>
+  select(gender, ageAtDiagnosis, FAB_subtype, ELN2022, consensusAMLFusions, Status, specimenType, outcome, all_of(top5), overallSurvival, vitalStatus) |>
+  mutate(outcome = ifelse(is.na(outcome), "Unknown", outcome))
+
+
+cbind(drugcombo,df)[1:596,] |>
+  select(InBAML, hasRNA, hasDNA, hasProt, ageAtDiagnosis, gender, Status, ELN2022,  FAB_subtype, outcome, all_of(top5), overallSurvival, vitalStatus) |>
+  gtsummary::tbl_summary(by=InBAML) 
+
+
+cbind(drugcombo,df)[1:596,] |>
+  select(InBAML, hasRNA, hasDNA, hasProt, ageAtDiagnosis, gender, Status, ELN2022,  FAB_subtype, outcome, all_of(top5), overallSurvival, vitalStatus) |> 
+  gtsummary::tbl_summary() 
+```
+
+# overlapping data with existing cohort
+
+Re-occurring drug screening data  + how many samples is involved
+- monotherapy
+- (included all counts, pre-filtering)
+
+```{r}
+oshu_sample <- read.csv("data/oshu/clinical_summary.csv")[,1:7]
+
+baml <- read.csv("data/baml/mono_detail.csv")
+ven <- read.csv("data/baml/ven_combi_detail.csv") %>% filter(Chemical_compound != "")
+
+## from baml 2.0
+dss_baml <- read.csv("data/baml/DSS_baml_indiv_raw.csv")[,c(3,26:28)] |>
+  inner_join(oshu_sample[,c(2,5:7)]) |> # filter by sample
+  left_join(baml[1:2],by=c("drug"="OGname")) |>
+  filter(drug %in% unique(drugdet$Drug)) |> # filter by drugdet
+  unique() |>
+  select(Sample_ID, Chemical_compound) |>
+  mutate(Tested = "BeatAML")
+
+## from ven
+dss_ven <- read.csv("data/baml/ven_combi_response.csv")[1:5] |>
+  inner_join(oshu_sample[,c(2:4)], by=c("patient_id"="patientId", "lab_id"="labId")) |> # filter by sample
+  inner_join(ven,by=c("drug")) |> # filter by combo
+  unique() |>
+  select(Sample_ID, Chemical_compound) 
+
+check <- full_join(dss_baml, dss_ven) |>
+  mutate(Tested = ifelse(is.na(Tested), "BeatAML-VenCombo", Tested))
+
+## from oshu
+dss_oshu <- read.csv("data/oshu/raw/DSS_oshu_raw.csv")[,c(3,26:27)] |>
+  left_join(oshu_sample[,c(2:4)], by=c("patient"="patientId", "lab_id"="labId"))
+
+dss_oshu_mono <- dss_oshu |>
+  filter(!grepl(" - ", drug)) |>
+  left_join(drugdet[1:2],by=c("drug"="Chemical_compound")) |>
+  unique() |>
+  select(Sample_ID, Drug) |>
+  rename(Chemical_compound=Drug) |>
+  mutate(Type = "monotherapy")
+
+dss_oshu_combo <- dss_oshu |>
+  filter(grepl(" - ", drug), drug != "Quizartinib - NVP-TAE684 - Arsenic Trioxide") |>
+  left_join(combidet[3:4],by=c("drug"="Combination")) |> 
+  unique() |>
+  select(Sample_ID, combo) |>
+  rename(Chemical_compound=combo) |>
+  mutate(Type = "drug combination")
+```
+
+## Table2: drug mapping
+- samples
+- based on what values exists/used in the current OSHU dataset
+
+```{r}
+dss_oshu <- rbind(dss_oshu_mono, dss_oshu_combo) |>
+  left_join(check) |>
+  mutate(Tested = ifelse(is.na(Tested), "BeatAML-DrugCombo", Tested)) |>
+  group_by(Chemical_compound, Type, Tested) |>
+  reframe(n=n()) |>
+  pivot_wider(names_from = Tested, values_from = n, values_fill = list(n = NA)) |>
+  arrange(Type, Chemical_compound)
+dss_oshu$Total <- rowSums(dss_oshu[,3:5], na.rm = T)
+
+write.csv(dss_oshu, "output/oshu_drug_mapping.csv", row.names = F)
+```
+
+```{r}
+## new monotherapy in bamlcombi
+sum(unique(drugdet$Drug) %in% unique(baml$Chemical_compound)) # 45
+unique(drugdet$Drug) [!unique(drugdet$Drug) %in% unique(baml$Chemical_compound)]
+```
+- [1] "Arsenic Trioxide" "AGI combo"        "Telaglenastat"    "Dordaviprone"    
+[5] "AZD5991"          "Decitabine" 
+
+## SourceData drug/combi detail, prefilter and postfilter counts
+
+Total filtered counts considered
+- number of samples left after QC and averaging
+```{r}
+# prefilter (unique samples)
+dss_oshu_mono <- dss_oshu_mono |>
+  group_by(Chemical_compound) |> 
+  summarise(Samples_tested=n()) |>
+  left_join(unique(mono[2:8]),by=c("Chemical_compound"="Drug")) |>
+  arrange(tolower(Chemical_compound)) |>
+  select(1,3:8,2)
+
+dss_oshu_combo <- dss_oshu_combo |>
+  left_join(combo[c(1,2,4:5)],by=c("Chemical_compound"="combo")) |>
+  group_by(Drug1, Drug2, Chemical_compound, combo_class) |>
+  summarise(Samples_tested=n()) |>
+  arrange(tolower(Chemical_compound))
+
+# post filter (unique samples)
+## sourcedata combi detail
+dss_oshu_all <- read.csv("data/oshu/DSS_combi.csv") |>
+  group_by(Combination) |>
+  summarise(Samples_postfilt=n()) %>%
+  left_join(dss_oshu_combo, ., by=c("Chemical_compound"="Combination"))
+
+## sourcedata mono detail
+dss_oshu_all <- read.csv("data/oshu/DSS_mono.csv") |>
+  group_by(Chemical_compound) |>
+  summarise(Samples_postfilt=n()) %>%
+  left_join(dss_oshu_mono, .)
+```
+
+## suppfig 1b
+- those-not-exist-in-DrugCombo vs BeatAML_BeatAMLVen
+```{r}
+# variable - listofdrug, mono, listofcombi, combi, oshu_sample, dss_ven
+
+## from baml 2.0
+dss_baml <- read.csv("data/baml/DSS_BAML_postfilt.csv") %>%
+  filter(Chemical_compound %in% unique(listofdrug$Drug)) %>%
+  mutate(label = paste0(Sample_ID, "_", Chemical_compound),
+         Set = "BeatAML") 
+
+## from ven
+dss_ven <- dss_ven %>%
+  mutate(label = paste0(Sample_ID, "_", Chemical_compound)) %>%
+  mutate(Set = "BeatAMLVen")
+
+############# mono ##############
+dss_oshu <- mono %>%
+  mutate(label = paste0(Sample_ID, "_", Chemical_compound)) %>%
+  mutate(Set = ifelse(label %in% dss_baml$label, "BeatAML_BeatAMLVen", ifelse(label %in% dss_ven$label, "BeatAML_BeatAMLVen", "BeatAMLDrugCombo"))) %>%
+  group_by(Chemical_compound, Set) %>%
+  reframe(average_dss = mean(s_dss), n=n()) %>%
+  group_by(Chemical_compound) %>%
+  mutate(count=n())
+
+# 48 common mono
+df <- reshape2::dcast(dss_oshu[dss_oshu$count>1,], Chemical_compound ~ Set, value.var = "average_dss") %>%
+  mutate(label="Monotherapy")
+
+############# combi ##############
+dss_oshu <- combi %>%
+  rename(Chemical_compound = Combination) %>%
+  mutate(label = paste0(Sample_ID, "_", Chemical_compound)) %>%
+  mutate(Set = ifelse(label %in% dss_ven$label, "BeatAML_BeatAMLVen", "BeatAMLDrugCombo")) %>%
+  group_by(Chemical_compound, Set) %>%
+  reframe(average_dss = mean(s_dss), n=n()) %>%
+  group_by(Chemical_compound) %>%
+  mutate(count=n())
+
+# 21 common combination
+reshape2::dcast(dss_oshu[dss_oshu$count>1,], Chemical_compound ~ Set, value.var = "average_dss") %>%
+  mutate(label="Combination") %>%
+  bind_rows(., df) %>%
+
+  ggscatter(., x="BeatAML_BeatAMLVen", y="BeatAMLDrugCombo", 
+            color = "label", palette = c("#a73030ff","#7aa6dcff"),
+            add = c("reg.line"), add.params = list(color="grey20"),
+            cor.coef = T, cor.method = "spearman"
+            ) +
+  theme(aspect.ratio = 1)
+
+ggsave("plot/suppfig1/supp_1b.png", width=4, height = 5, units = "in", dpi = 600)
+```
+
+# fig 1b: heatmap overview
+```{r}
+# variable - matrix, listofcombi, combi
+
+##### Heatmap for sampleinfo #####
+oshu_SI <- matrix %>% 
+  filter(Disease.status != "Healthy") %>%
+  mutate(cohort = ifelse(grepl("S", Sample_ID), "BeatAML", "New"),
+         AMLFusion = factor(outcome, levels=fusion.order),
+         Disease.status = factor(Disease.status, levels=disease.order3, labels= c("Diagnosis", "Relapse", "Residual", "PostChemo", "Unknown")),
+         ELN2022 = factor(ELN2022, levels=eln.col.order)) %>%
+  arrange(Disease.status, ELN2022, FAB_subtype)
+
+# Prepare mutation matrix
+mat <- t(oshu_SI[,c(32:55, 58:103)])
+top25 <- names(rev(sort(rowSums(mat, na.rm = T))))[1:25]
+mat <- mat[top25,]
+colnames(mat) <- oshu_SI$Sample_ID
+
+na_mask <- data.frame(col = 1:596,
+                      na = colSums(is.na(mat)),
+                      count = colSums(mat, na.rm = T) ) %>%
+  filter(na>0) %>%
+  arrange(na, count)
+na_mask <- na_mask$col
+
+column_title = ""
+
+col_ha = columnAnnotation(Cohort=oshu_SI$cohort,
+  Disease_status = oshu_SI$Disease.status,
+  FAB_subtype=oshu_SI$FAB_subtype,
+  ELN2022=oshu_SI$ELN2022,
+  AMLFusion=oshu_SI$AMLFusion,
+  col=list(Cohort=c("BeatAML"="plum", "New"="turquoise4"),
+           Disease_status = disease.col3,
+           FAB_subtype=subtype.col2,
+           ELN2022=eln.col,
+           AMLFusion=fusion
+           ),# na_col = "grey50",
+  annotation_name_side = "left", height = unit(4, "cm"))
+
+# Prepare matrix for oncoPrint - obtaining column order without NA first
+mat2=mat
+mat2[is.na(mat2)|mat2==0] = ""
+mat2[mat2=="TRUE"] = "MUT;"
+col = c("MUT" = "darkblue")
+alter_fun = list(
+    background = alter_graphic("rect", fill = "grey90", # "#CCCCCC", 
+                               horiz_margin = unit(.2, "pt"), vertical_margin = unit(.2, "pt")),  
+    MUT = alter_graphic("rect", fill = col["MUT"], horiz_margin = unit(.2, "pt"), vertical_margin = unit(.2, "pt"))
+)
+
+heatmap_legend_param = list(title = "Mutation", at = c("MUT"),  labels = c("Mutation"))
+
+op <- oncoPrint(mat2, 
+    alter_fun = alter_fun, col = col, 
+    remove_empty_columns = FALSE, remove_empty_rows = TRUE,
+    pct_side = "right", row_names_side = "left")
+
+x <- ComplexHeatmap::draw(op)
+col_dend = column_order(x)
+col_dend = c(col_dend[!col_dend %in% na_mask], setNames(na_mask,na_mask))
+
+# Oncoprint for mutation
+mat[is.na(mat)] = "NA;"
+mat[mat=="FALSE"] = "NEG;"
+mat[mat=="TRUE"] = "MUT;"
+col = c("MUT" = "darkblue",
+        "NEG" = "grey90",
+        "NA" = "grey50")
+alter_fun = list(
+    background = alter_graphic("rect", fill = "grey50", horiz_margin = unit(.2, "pt"), vertical_margin = unit(.2, "pt")),   
+    MUT = alter_graphic("rect", fill = col["MUT"], horiz_margin = unit(.2, "pt"), vertical_margin = unit(.2, "pt")),
+    NEG = alter_graphic("rect", fill = col["NEG"], horiz_margin = unit(.2, "pt"), vertical_margin = unit(.2, "pt")),
+    `NA` = alter_graphic("rect", fill = col["NA"], horiz_margin = unit(.2, "pt"), vertical_margin = unit(.2, "pt"))
+)
+
+heatmap_legend_param = list(title = "Mutation", at = c("MUT", "NEG", "NA"), 
+        labels = c("Present", "Absent", "NA"))
+
+op <- oncoPrint(mat, 
+    alter_fun = alter_fun, col = col, column_order = col_dend, 
+    remove_empty_columns = FALSE, remove_empty_rows = TRUE,
+    pct_side = "right", row_names_side = "left", top_annotation = col_ha,
+    column_title = column_title, heatmap_legend_param = heatmap_legend_param,
+    bottom_annotation = HeatmapAnnotation(cbar = anno_oncoprint_barplot(type = c("MUT"),axis_param = list(direction="reverse"))),
+    right_annotation = rowAnnotation(rbar = anno_oncoprint_barplot(type = c("MUT"))),
+    pct_include = c("MUT"),
+    height = unit(9, "cm")
+    )
+
+# Drug response heatmap
+mat <- reshape2::acast(combi, Combination~Sample_ID, value.var = "s_dss", fun.aggregate = mean, fill = NA_real_)
+mat <- mat[order(-rowSums(!is.na(mat))), ]
+
+mask <- !is.na(mat)
+row_anno <- listofcombi[order(listofcombi$combo, rownames(mat)),4:5] %>%
+  separate_wider_delim(cols=combo_class, delim=" - ", names = c("class1", "class2"), cols_remove = T)
+
+row_anno = rowAnnotation(
+  `Drug class 1` = row_anno$class1,
+  `Drug class 2` = row_anno$class2,
+  col=list(`Drug class 1` = drugclass, `Drug class 2` = drugclass),
+  gp = gpar(col = "grey50", lwd=.1), 
+  annotation_name_side = "top",
+  annotation_name_rot=45,
+  annotation_legend_param = list( 
+    `Drug class 1` = list(
+      title="Drug Class", 
+      at=c("Apoptotic modulator", "Chemotherapeutics", "Differentiating/epigenetic modifier", "Kinase inhibitor", "Metabolic modifier", "mTOR inhibitor", "Other"), 
+      legend_gp = gpar(fill = c("#E41A1C", "#FFD92F", "#4DAF4A", "royalblue", "darkolivegreen1", "turquoise4", "plum")) 
+      )
+    ),
+  show_legend = c(TRUE, FALSE)
+)
+
+
+dr <- Heatmap(
+  mat, na_col = "grey90", rect_gp = gpar(col = "white", lwd = 0.2),
+  col= colorRamp2(seq(0,1,by=0.1), viridis::viridis(n=11)),
+  row_title = "Combinations",
+  column_title = "Samples",
+  show_row_names = F, show_column_names = F,
+  show_row_dend = F, show_column_dend = F,
+  cluster_rows = F, cluster_columns = F, column_order = col_dend,
+  right_annotation = row_anno,
+  heatmap_legend_param = list(legend_height = unit(8, "cm"), direction = "horizontal"),
+  name = "DSS", height = unit(10, "cm")
+)
+
+ht_list = dr %v% op 
+
+png("plot/fig1/main_1b.png", width=42, height=40, units="cm", res=600)
+ComplexHeatmap::draw(ht_list, heatmap_legend_side = "bottom", annotation_legend_side = "bottom", merge_legend=T)
+dev.off()
+```
+
+
+# fig 2a: dss distribution of indiv monotherapy
+```{r}
+# variable - mono, listofdrug
+plot <- mono %>%
+  group_by(Chemical_compound) %>%
+  mutate(median = median(s_dss), n=n(),
+         label = paste0(Chemical_compound, " (n=", n, ")")) %>%
+  left_join(., unique(listofdrug[,c(2,7)]), by=c("Chemical_compound"="Drug"))
+
+ggplot(plot, aes(x=reorder(label, median, decreasing = T), y=s_dss)) +
+  geom_violin(aes(colour=Drug_Class), scale="width", linewidth=1) + 
+  ggforce::geom_sina(size=0.2, scale="width", colour="black") +
+  scale_colour_manual(values = drugclass) +
+  labs(x="", y="DSS") +
+  theme_pubr() +
+  theme(axis.text.x = element_text(angle = 60, vjust = 1, hjust=1),
+        legend.position = "right", legend.text = element_text(size=11),
+        legend.key.height = unit(0.5,"cm")
+        )
+
+ggsave("plot/fig2/main_2a.png", width = 20, height = 5, units = "in", dpi=600)
+```
+
+# fig 2b: dss distribution
+```{r}
+# variable - mono, combi
+
+## Prepare data for plotting - combining and converting to long format
+p <- mutate(combi[,c(5,8)], Values="Combination") %>%
+  dplyr::rename(Chemical_compound = Combination) %>%
+  rbind(., mutate(mono[,c(3,6)], Values="Monotherapy")) %>%
+  mutate(Values = factor(Values, levels=c("Combination", "Monotherapy")))
+
+# Wilcoxon test p-value
+pval <- compare_means(s_dss ~ Values, data = p, method = "wilcox.test") # 0
+
+plot <- ggplot(p , aes(y=Values,x=s_dss, fill=Values)) +
+  scale_fill_manual(values=c("#a73030ff", "#7aa6dcff"), guide="none") +
+  ggridges::geom_density_ridges(quantile_lines=TRUE, scale = 1, rel_min_height = 0.01, alpha=0.7, quantiles=2)  + 
+  labs(x="DSS", y="") +
+  theme_classic2(base_size = 14) +
+  theme(aspect.ratio = 0.4,
+        panel.grid.major.y = element_line(color = "#A8BAC4", linewidth = 0.3) ) + 
+  annotate("text", x = max(p$s_dss) * 0.95, y = 2.8, label = "p < 2.2e-16", hjust = 1, size = 4)
+
+plot
+
+ggsave(plot = plot, "plot/fig2/main_2b.png", width = 6, height = 3, units = "in", dpi=600)
+```
+
+# table3. correlation between monotherapy and combination therapy
+
+```{r}
+sampleinfo <- matrix[1:596,]
+
+mono.m <- sampleinfo[,c(1,104:154)] %>% column_to_rownames("Sample_ID") %>%
+  select(-`Arsenic Trioxide`)
+combi.m <- sampleinfo[,c(1,155:324)] %>% column_to_rownames("Sample_ID")
+
+df <- bind_cols(mono.m, combi.m)
+
+temp <- .run.cor(group.m=df, x.m=df, min.n = 5, method = "spearman") %>%
+  rowwise() %>%
+  mutate(Category_1 = ifelse(grepl(" - ", Group), "drug combination", "monotherapy"),
+         Category_2 = ifelse(grepl(" - ", Combination), "drug combination", "monotherapy")
+         )
+
+write.csv(temp, "output/oshu_drug_sens_correlation.csv", row.names = F)
+```
+
+## supp fig 2a: for correlation between monotherapy response (table 3)
+```{r}
+listofdrug1 <- listofdrug %>% arrange(Drug_Class, Drug_Sub_Class, MOA) %>%
+  arrange(Drug_Class, Drug_Sub_Class) %>%
+  mutate(label = str_trunc(Drug, width = 13, ellipsis = ""))
+
+temp <- read.csv("output/oshu_drug_sens_correlation.csv") %>%
+  mutate(Group = str_trunc(Group, width = 13, ellipsis = ""),
+         Combination = str_trunc(Combination, width = 13, ellipsis = "")) %>%
+  filter(Category_1 == "monotherapy", Category_2 == "monotherapy", cor != 1)
+temp <- reshape2::acast(Group~Combination, data=temp, value.var = "cor")
+temp <- temp[listofdrug1$label, listofdrug1$label]
+
+## plotting heatmap
+row_anno = rowAnnotation(
+  `DrugClass` = listofdrug1$Drug_Class,
+  col=list(`DrugClass` = drugclass),
+  gp = gpar(col = "white", lwd=.1), 
+  annotation_name_side = "top",
+  annotation_name_rot=0,
+  annotation_legend_param = list( 
+    `DrugClass` = list(
+      title="Drug Class", 
+      at=c("Apoptotic modulator", "Chemotherapeutics", "Differentiating/epigenetic modifier", "Kinase inhibitor", "Metabolic modifier", "mTOR inhibitor", "Other"), 
+      legend_gp = gpar(fill = c("#E41A1C", "#FFD92F", "#4DAF4A", "royalblue", "darkolivegreen1", "turquoise4", "plum")) 
+      )
+    )
+)
+
+png("plot/suppfig2/suppfig_2a_heatmap.png", width = 14, height = 11, units = "in", res = 600) 
+Heatmap(
+  temp, rect_gp = gpar(type = "none"), na_col = "white",
+  colorRamp2(c(-0.6, -0.3, 0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.75, 1), 
+             rev(brewer.pal(10, "Spectral"))),
+  cluster_rows = F, cluster_columns = F,
+  show_row_dend = F, show_column_dend = F, left_annotation = row_anno,
+  row_names_side = "left", column_names_rot = 50,
+  heatmap_width = unit(11, "in"), heatmap_height = unit(10, "in"),
+  cell_fun = function(j, i, x, y, w, h, fill) {
+    if(i >= j) { grid.rect(x, y, w, h, gp = gpar(fill = fill, col = "grey"))}
+    if(i==j) {grid.rect(x, y, w, h, gp = gpar(fill = "white", col = "grey"))}
+  },
+  name = "Spearman corr"
+  )
+```
+
+# combination index
+
+```{r}
+## calculating CI at samples levels using HSA/IDA prinicple
+HSA_eval <- rbindlist(
+  lapply(setNames(1:170, listofcombi$combo), function(i){
+    
+    # combination DSS per sample
+    data <- combi[combi$Combination==listofcombi[i, 4],] %>%
+      dplyr::select(Sample_ID, Combination, s_dss)
+    
+    # monotherapy DSS per sample
+    data <- mono[mono$Chemical_compound %in% listofcombi[i, 1:2],] %>%
+      reshape2::dcast(Sample_ID ~ Chemical_compound, fun.aggregate = mean, value.var = "s_dss", fill = NA_real_) %>%
+      inner_join(., data, by="Sample_ID")
+    
+    data <- data[complete.cases(data),]
+    colnames(data)[2:3] <- c("Drug1_dss", "Drug2_dss")
+    
+    data$best_mono <- apply(data[,2:3], 1, function(x){ifelse(x[1]==x[2], NA, listofcombi[i, which.max(x)])})
+    data$HSA_ref = pmax(data$Drug1_dss, data$Drug2_dss)
+    data$Excess_HSA = data$s_dss - data$HSA_ref
+    data$CI <- data$HSA_ref/data$s_dss # predicted/observed
+    data$CI[is.nan(data$CI)] = NA # Inf when combi=0; NaN when all is 0
+    data
+  }) 
+)
+
+write.csv(HSA_eval, "output/supp/oshu_HSA_eval.csv", row.names = F)
+```
+
+## table4: combination index dss
+```{r}
+## selecting for correlations of combi with constituent mono
+temp <- read.csv("output/oshu_drug_sens_correlation.csv") %>%
+  filter(Category_1 == "monotherapy", Category_2 == "drug combination") %>%
+  rowwise() %>%
+  mutate(
+    cor = signif(cor, 3),
+    select = grepl(Group, Combination),
+    drug_partner = if_else( select, gsub(" - ", "", gsub(Group, "", Combination)), NA_character_ )
+  ) %>%
+  filter(select) %>% ungroup()
+
+## summarising across samples for each combinations
+HSA_eval <- read.csv("output/supp/oshu_HSA_eval.csv", check.names = F) %>%
+  group_by(Combination) %>%
+  summarise(Median_Drug1_dss = median(Drug1_dss), 
+            Median_Drug2_dss = median(Drug2_dss), 
+            Median_dss = median(s_dss), 
+            median_CI = median(CI, na.rm=T), n = n(), 
+            percentSample = sum(CI<1 , na.rm = T)*100/n )
+
+## adding in the correlation info to the constituent mono & combination type
+combiclass <- combidet %>% select(4,5)  %>% distinct() %>% column_to_rownames("combo")
+
+temp <- temp %>%
+  arrange(Group) %>%
+  group_by(Combination) %>%
+  mutate(Drug = paste0("Drug", row_number())) %>%
+  select(Drug, Combination, cor) %>%
+  pivot_wider(names_from = Drug, values_from = cor) %>%
+  rename(Drug1_corr = Drug1, Drug2_corr = Drug2)
+
+temp <- left_join(HSA_eval, temp) %>%
+  mutate(
+    One_driver = (Drug1_corr > 0.5|Drug2_corr > 0.5)& abs(Drug1_corr - Drug2_corr)>0.1,
+    One_driver = ifelse(One_driver, ifelse(Drug1_corr > Drug2_corr, "Drug1", "Drug2"), "None"),
+    Better_combi = median_CI < 1,
+    Combo_class = combiclass[Combination,]
+    ) %>%
+  select(1, 12, 2:11) %>% 
+  arrange(median_CI)
+
+write.csv(temp, "output/oshu_combinationindex.csv", row.names = F)
+```
+
+## fig 2d: scatterplot median CI vs median DSS
+```{r}
+# variable - HSA_df
+HSA_df <- read.csv("output/supp/oshu_HSA_eval.csv", check.names = F) %>%
+  reframe(median_dss = median(s_dss, na.rm=T), 
+          n = n(), 
+          median_CI = median(CI, na.rm=T), 
+          median_excesshsa = median(Excess_HSA, na.rm=T),
+          fill = sum(CI<1 , na.rm = T)*100/n, .by=c(Combination)) 
+
+plot <- HSA_df %>%
+  ungroup() %>%
+  mutate(
+    median_CI = if_else(median_CI > 3, 3.3, median_CI),
+    label_up = if_else((median_CI > 1.5 | median_dss > 0.46) & median_CI <= 3 & median_CI > 1, Combination, NA_character_),
+    label_down = if_else(median_CI < 1 & median_dss > 0.46, Combination, NA_character_),
+    label2 = if_else(Combination == "Azacitidine - Venetoclax", "Azacitidine - Venetoclax", NA_character_)
+  )
+
+ticklabels <- c("0.2", "1", ">3")
+tickvals <- c(0.2, 1, 3)
+
+plot <- plot %>%
+  ggplot(., aes(x=median_dss, y=median_CI, size=n, fill=fill)) +
+  geom_point(color="black", alpha=0.5, shape=21) + 
+  geom_hline(yintercept = 1, linetype="dashed") +
+  scale_y_log10(labels = ticklabels, breaks = tickvals, limits = c(0.2,3.5)) +
+  
+  geom_text_repel(mapping=aes(label=label_up), size=4, xlim = c(0,Inf), ylim = c(log10(1), log10(3)),
+                  min.segment.length = 0, box.padding=.5, point.padding=.25,
+                  max.overlaps = 9, force = 1,
+                  seed=123) +
+
+  geom_text_repel(mapping=aes(label=label_down), size=4, xlim = c(0,Inf), ylim = c(log10(0.2), log10(1)),
+                  min.segment.length = 0, box.padding=.5, point.padding=.25,
+                  max.overlaps = 20, force = 0.2,
+                  seed=123) +
+  
+  geom_text_repel(mapping=aes(label=label2), point.padding = unit(0.5, "lines"),
+              segment.color = "black", min.segment.length = 0.03, 
+              color = "blue", size=4.5, fontface="bold", nudge_x = -0.4, nudge_y = -0.05) + 
+  
+  scale_fill_viridis_c(name="% Samples\nwith CI < 1", limits=c(0,100)) +
+  scale_size_continuous(name="Sample size") +
+  
+  annotate( "text", label = "values above this threshold are capped", x=1, y=3.2, colour = "grey50" ) +
+  geom_hline(yintercept = 3, linetype="dashed") +
+  xlim(c(0,1.25)) + 
+  labs(x = "Median DSS", y = "Median Combination Index") +
+  theme_classic(base_size = 14) +
+  theme(aspect.ratio = 0.9,
+        legend.title = element_text(size=12), 
+        legend.text = element_text(size = 12),
+        legend.position = "top")
+
+plot
+
+ggsave("plot/fig2/main_2d.png", units = "cm", width = 25, height = 21, dpi=600)
+```
+
+## fig 2d: circos figure 2 for table 4
+```{r}
+## use HSA_df
+df <- read.csv("output/oshu_combinationindex.csv") %>%
+  mutate(Better_combi = case_when(median_CI == 1 ~ "CI=1",
+                                  median_CI < 1 ~ "CI<1",
+                                  median_CI > 1 ~ "CI>1"))
+
+combi <- read.csv("data/oshu/DSS_combi.csv") 
+plot <- combi %>%
+  group_by(Combination) %>%
+  reframe(
+    pt25 = quantile(s_dss,probs=.25),
+    median = median(s_dss),
+    pt75 = quantile(s_dss, probs=.75),
+    n=n()
+  ) %>%
+  mutate(label = paste0(" (n=", n, ")")) %>%
+  left_join(., unique(listofcombi[,c(1,2,4,5)]), by=c("Combination"="combo")) %>%
+  left_join(., unique(listofdrug[,c(2,7)]), by=c("Drug1"="Drug")) %>%
+  left_join(., unique(listofdrug[,c(2,7)]), by=c("Drug2"="Drug"), suffix = c("1", "2"))  %>%
+  mutate(
+    drug1_colour = drugclass[Drug_Class1], 
+    drug2_colour = drugclass[Drug_Class2]
+  ) %>% column_to_rownames("Combination")
+
+combi <- reshape2::acast(Sample_ID~Combination, data=combi, value.var = "s_dss")
+
+drugclass_ = c("Apoptotic\nmodulator" = "#E41A1C", 
+              "Chemotherapeutics" ="#FFD92F",
+              "Differentiating\nepigenetic modifier" = "#4DAF4A",
+              "Immunomodulator" ="#FF7F00",
+              "Kinase inhibitor" = "royalblue",
+              "Metabolic modifier" = "darkolivegreen2",
+              "mTOR inhibitor" = "turquoise4",
+              "Other" = "plum"
+)
+
+```
+
+
+```{r}
+# Order rows 
+df_ord <- df %>% column_to_rownames("Combination") %>%
+  arrange(Median_dss)
+
+mat_ord <- as.matrix(df_ord %>% select(Drug1_corr, Drug2_corr) )
+combi_ord <- combi[,rownames(df_ord)]
+plot_ord <- plot[rownames(df_ord),]
+
+# Colors
+col_corr <- colorRamp2(
+  c(-1, -0.75, 0, 0.75, 1),
+  c("#4393c3","#2b8cbe", "white", "#e34a33", "#d6604d") )
+
+col_dss  <- colorRamp2(
+  c(0, 0.3, 1),
+  c("#f7fcf5", "#a1d99b", "seagreen") )
+  
+# Draw the 2-column tiny heatmap around the circle
+png("plot/fig2/main_2c_circos.png", width = 15, height = 15, units = "in", res = 600)
+circos.clear()
+circos.par(gap.after = c(20),
+           start.degree = 80,
+           cell.padding = c(0, 0, 0, 0),
+           track.margin = c(0.005, 0.001),
+           circle.margin = c(0.001, 0.001, 0.001, 0.001) 
+)
+
+circos.heatmap.initialize(mat_ord, cluster = FALSE)
+
+##  combination names
+part1 <- str_trunc(plot_ord$Drug1, width = 13, ellipsis = "")          # length 170
+part2 <- rep("-", 170)
+part3 <- str_trunc(plot_ord$Drug2, width = 13, ellipsis = "")          # length 170
+part4 <- plot_ord$label
+col1  <- plot_ord$drug1_colour   # length 170
+col2  <- rep("black", 170)
+col3  <- plot_ord$drug2_colour   # length 170
+
+circos.trackPlotRegion(
+  ylim = c(0, 1), track.height = 0.35, bg.border = NA,
+  panel.fun = function(x, y) {
+    pos  <- seq(0.5, 169.5, by = 1)   # 1:170
+    y0   <- 0                         # middle of the track (radial)
+
+    # draw three fragments per slot, horizontally separated
+    circos.text(pos, y0, labels = part1, col = col1,
+                facing = "clockwise", niceFacing = TRUE, cex = 1, adj = c(0, 0.5))
+    circos.text(pos, y0 + 0.47, labels = part2, col = col2,
+                facing = "clockwise", niceFacing = TRUE, cex = 1, adj = c(0.5, 0.5))
+    circos.text(pos, y0 + 0.5, labels = part3, col = col3,
+                facing = "clockwise", niceFacing = TRUE, cex = 1, adj = c(0, 0.5))
+    circos.text(pos, y0 + 0.97, labels = part4, col = col2,
+                facing = "clockwise", niceFacing = TRUE, cex = 1, adj = c(0, 0.5))
+  }
+)
+
+circos.track(track.index = get.current.track.index(), panel.fun = function(x, y) {
+  circos.text(CELL_META$cell.xlim[2] + convert_x(25, "mm"), y = 0.55, 
+              labels = "Sample no.\n\n\n\n\n\n\nDrug2\n\n\n\n\n\n\nDrug1", cex = 0.8, adj = c(0.5, 0.5))
+  }, bg.border = NA)
+
+## correlation
+circos.heatmap(
+  mat_ord[,2:1], col = col_corr, cluster = FALSE,
+  # rownames.side = "outside", rownames.cex = 1,
+  show.sector.labels = FALSE,
+  track.height = 0.1, cell.border = "white", cell.lwd = .5
+)
+
+## correlation text
+circos.track(track.index = get.current.track.index(), panel.fun = function(x, y) {
+  if(CELL_META$sector.numeric.index == 1) { # the last sector
+    cn = c("cor(Drug1,Combi)", "cor(Drug2,Combi)")
+    n = length(cn)
+    circos.text(x = rep(CELL_META$cell.xlim[2], n) + convert_x(17, "mm"), y = 1:n - 0.5, 
+                labels = cn, cex = .8, adj = c(0.5, 0.5), facing = "bending.inside")
+  }
+}, bg.border = NA)
+
+## boxplot/pointrange
+circos.track(ylim = c(0, 1), panel.fun = function(x, y) {
+  y = seq(0.25, 0.75, by = 0.25)
+  circos.segments(0, y, 170, y, col = "grey50", lty = 3)
+  circos.segments(1:169, 0.02, 1:169, 0.98, col = "grey80", lty = 3)
+  
+  for(pos in seq(1, 170, by = 1)) {
+    x=pos-0.5
+    value = plot_ord[pos,]
+    circos.segments(x, value$pt25, x, value$pt75)
+    
+    cap <- mm_x(0.8)
+    circos.segments(x - cap, value$pt25, x + cap, value$pt25)
+    circos.segments(x - cap, value$pt75, x + cap, value$pt75)
+    circos.points(x, value$median, pch = 16, cex = 0.5)
+    
+    # value = combi_ord[,pos] %>% na.omit() %>% as.numeric()
+    # circos.boxplot(value, pos-0.5, outline = F, box_width = 0.5, cex = .7)
+  }
+  }, track.height = 0.1
+)
+circos.yaxis(side = "right", labels.cex = .7, at = seq(0, 1, by = 0.25))
+
+circos.track(track.index = get.current.track.index(), panel.fun = function(x, y) {
+  circos.text(CELL_META$cell.xlim[2] + convert_x(16, "mm"), y = 0.5, 
+              labels = "DSS\n(25th,75th)", cex = 0.8, adj = c(0.5, 0.5))
+  }, bg.border = NA)
+
+## median dss
+circos.heatmap(as.numeric(df_ord[[4]]) , col = col_dss, cluster = FALSE, track.height = 0.02, cell.border = "white", cell.lwd = .5 )
+
+circos.track(track.index = get.current.track.index(), panel.fun = function(x, y) {
+  circos.text(CELL_META$cell.xlim[2] + convert_x(12,"mm"), y = 0.5, 
+              labels = "MedianDSS", cex = 0.8, adj = c(0.5, 0.5), facing = "bending.inside")
+  }, bg.border = NA)
+
+## one driver, better combi
+circos.heatmap(as.character(df_ord[[11]]) , col = c(`CI<1` = "#3b5b92", `CI=1` = "darkturquoise", `CI>1` = "lavender"), cluster = FALSE, track.height = 0.03, cell.border = "white", cell.lwd = .5)
+
+circos.track(track.index = get.current.track.index(), panel.fun = function(x, y) {
+  circos.text(CELL_META$cell.xlim[2] + convert_x(11.5, "mm"), y = 0.5, 
+              labels = "Median CI", cex = 0.8, adj = c(0.5, 0.5), facing = "bending.inside")
+  }, bg.border = NA)
+
+circos.heatmap(as.character(df_ord[[10]]) , col = c(Drug1 = "#FC8D59", None = "lemonchiffon", Drug2 = "burlywood3"), cluster = FALSE, track.height = 0.03, cell.border = "white", cell.lwd = .5 )
+
+circos.track(track.index = get.current.track.index(), panel.fun = function(x, y) {
+  circos.text(CELL_META$cell.xlim[2] + convert_x(10, "mm"), y = 0.5, 
+              labels = "OneDriver", cex = 0.8, adj = c(0.5, 0.5), facing = "bending.inside")
+  }, bg.border = NA)
+
+# dev.off()
+
+# png("plot/circos_legend_table4.png", width = 10, height = 10, units = "in", res = 600)  # High-res, large file
+# circos.clear()
+lgd_corr <- Legend(title = "Spearman corr", col_fun = col_corr, legend_height = unit(1.5, "cm"))
+lgd_dss  <- Legend(title = "Median DSS", at = pretty(c(0, 1), 2), col_fun = col_dss, legend_height = unit(1.5, "cm"))
+lgd_better = Legend(title = "Median CI", at = c("CI<1", "CI=1", "CI>1"), 
+    legend_gp = gpar(fill = c("#3b5b92", "darkturquoise", "lavender"))) 
+lgd_driver = Legend(title = "OneDriver", at = c("Drug1", "None", "Drug2"), 
+    legend_gp = gpar(fill = c("#FC8D59","lemonchiffon","burlywood3")))
+lgd_dc = Legend(title = "Drug Class", at = names(drugclass_), 
+    legend_gp = gpar(fill = drugclass_))
+
+draw(packLegend(lgd_corr, lgd_dss, lgd_better, lgd_driver, lgd_dc, max_height = unit(8, "cm")))
+
+dev.off()
+```
+
+## fig 2e
+- originially created in google sheets
+```{r}
+# variable - HSA_df, combi
+HSA_df <- read.csv("output/oshu_combinationindex.csv")
+
+tmp <- listofcombi %>% dplyr::select(Drug1, Drug2) %>% ## freq of occurrence for each drug
+  pivot_longer(cols = 1:2,values_to = "Drug") %>%
+  reframe(n = n(), .by = "Drug")
+tmp <- setNames(appearance$n, appearance$Drug)
+
+selected <- HSA_df %>% 
+  filter(median_CI < 1 & Median_dss > 0.426) %>%
+  left_join(., listofcombi[,c(1,2,4)], by=c("Combination"="combo")) %>%
+  dplyr::select(Drug1, Drug2) %>%
+  pivot_longer(cols = 1:2,values_to = "Drug") %>%
+  reframe(n = n(), Proportion = round(n/68, 2), .by = "Drug") %>%
+  mutate(total = tmp[Drug], normalised_prop = ifelse(total<5, NA, round(n/total,2)) ) %>%
+  left_join(., listofdrug[,c(2,5:8)]) %>% 
+  slice_max(n=10, order_by = normalised_prop) %>%
+  mutate( Approval_status = ifelse(Approval_status == "Approved", "Approved", "Investigational") ) 
+
+selected$label <- c( "Birabresib (BETi)", "Birinapant (IAPi)", "AZD5991 (MCL1i)", "Trametinib (MEKi)", "Palbociclib (CDKi)", "Idelalisib (PI3Ki)", "Bortezomib (Proteasome-i)", "JQ1 (BETi)", "Venetoclax (BCL2i)", "Quizartinib (FLT3i)" )
+
+
+ggplot(selected, aes(x = normalised_prop, y = reorder(label, normalised_prop, decreasing = F), fill = Approval_status)) +
+  geom_bar(stat = "identity", color = NA, width = 0.6) +
+  scale_fill_manual(values = c("#fe9900", "#0f518e"), name = "") +
+  geom_text(aes(label = round(normalised_prop, 2)), hjust = 1.1, color = "white") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0,1)) +
+  xlab("Frequency of occurrence (normalised)") + ylab("") +
+  theme_pubr(base_size = 12) +
+  theme(
+    legend.key.height = unit(0.5, "cm"),
+    aspect.ratio = 0.8,
+    panel.grid.major.x = element_line(color = "#cccccc")
+  )
+
+ggsave("plot/fig2/smain_2e.png", width = 8, height = 5, units = "in", dpi=600)
+```
+
+## suppfig 2c - created using STITCH
+<http://stitch.embl.de/>
+
+## suppfig 2b - barplot for clinically approved partners
+```{r}
+HSA_eval <- read.csv("output/supp/oshu_HSA_eval.csv", check.names = F)
+
+df <- read.csv("output/oshu_combinationindex.csv") %>%
+  left_join(listofcombi[,c(1,2,4)], by=c("Combination"="combo")) %>%
+  filter(median_CI <= 1, Median_dss >= 0.426)
+
+selected_approved <- c("Venetoclax", "Quizartinib", "Sorafenib", "Palbociclib", "Idelalisib", "Trametinib", "Bortezomib") # in 44 unique combi
+
+df_long <- df %>% select(Combination,Drug1,Drug2) %>% reshape2::melt(id.vars = "Combination", value.name = "Drug") %>%
+  filter(Drug %in% selected_approved)
+
+plotlist <- list()
+heights <- c()
+for (i in selected_approved) {
+  df2 <- df_long %>% filter(Drug == i) %>%
+    distinct(Combination) %>%
+    left_join(df) %>%
+    arrange(Median_dss)
+  
+  df2_long <- HSA_eval %>%
+    filter(Combination %in% df2$Combination) %>%
+    group_by(Combination) %>%
+    mutate(fill = sum(CI<1 , na.rm = T)*100/n())
+  
+  plotlist[[i]] <- df2_long %>%
+    mutate(Combination = factor(Combination, levels=df2$Combination)) %>%
+    ggplot(., aes(x=Combination, y=s_dss, fill = fill)) +
+    geom_boxplot(width = 0.5, color = "black") +
+    viridis::scale_fill_viridis(name="% Samples\nwith CI < 1", limits=c(45,92)) +
+    labs(x="", y="DSS", title = i) +
+    coord_flip() +
+    theme_pubr() +
+    theme(panel.grid.major.x = element_line(color = "#A8BAC4", size = 0.3),
+          axis.text.x = element_text(angle = 45, hjust = 1),
+          legend.position = "right") 
+    
+  
+  
+  heights <- c(heights, nrow(df2)/61)
+}
+
+patchwork::wrap_plots(plotlist, ncol = 1, heights = heights, guides = "collect")
+
+ggsave("plot/suppfig2/suppfig_2b_clinically.png", width = 6, height = 20, dpi = 600)
+```
+
+# sessioninfo
+```{r}
+sessionInfo()
+```
+

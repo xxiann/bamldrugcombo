@@ -1,0 +1,788 @@
+---
+title: "Single cell - Pseudotime (AML + healthy)"
+description: "van galen et al 2019 scRNAseq + pseudotime"
+date: "17 October 25"
+output: 
+  html_notebook:
+    theme: united
+    toc: yes
+    toc_float: yes
+---
+*** refer to src/preprocess/6.scrna_vg_preprocess.Rmd for preprocessing and clustering
+- re-clustering using seurat v5 for more efficient processing
+- seurat v5 was converted to v3 assay class for seurat 4.3.0 compatibility
+
+# 35 AML samples (N=12) + 5 healthy samples (N=5)
+*** currently contains all longitudinal samples
+
+"AML1012" 
+"AML210A"  
+"AML328"  
+"AML329"  
+"AML419A" 
+"AML420B" 
+"AML475"  
+"AML556"  
+"AML707B" 
+"AML870"  
+"AML916"  
+"AML921A"   
+"BM1"     
+"BM2"   
+"BM3"     
+"BM4"     
+"BM5"   
+
+To remove as described in van galen et al 2019
+"AML314", "AML371", "AML722B", "AML997" 
+
+# library
+```{r message=FALSE}
+library(tidyverse)
+library(Seurat)
+
+library(slingshot)
+library(tradeSeq)
+# library(SeuratExtend)
+
+library(ComplexHeatmap)
+library(RColorBrewer)
+library(patchwork)
+
+library(ggpubr)
+library(rstatix)
+
+source("src/function/scrna_colour.R")
+set.seed(10)
+
+set_alpha <- function(plot, alpha = 0.7){
+  for (i in 1:length(plot)) {
+    plot[[i]]$layers[[1]]$aes_params$alpha =  alpha
+  }
+  return(plot)
+}
+```
+
+# loading overall 
+```{r}
+all_ <- readRDS(file="data/scrna/all_v3.rds")
+reference <- read.csv("data/inflammatory_sig_246.csv")
+```
+
+# plots 
+
+## fig 6a: overall umap
+```{r}
+DimPlot(all_, reduction = "umap", group.by="CellType", shape.by = "cell_status", 
+        cols = hierarchy_colors, pt.size=.5, shuffle = T) %>%
+  set_alpha() + 
+  scale_shape_manual(values = c(17,16,15), name = NULL, 
+                     labels = c("AML_malignant\n(n=13,489)", 
+                                "AML_nonmalignant\n(n=15,333)", 
+                                "Healthy_normal\n(n=6,915)")) +
+  theme(aspect.ratio = 1) + ggtitle("") + 
+  guides(shape = guide_legend(override.aes = list(size = 3, alpha = 1)),
+         color = guide_legend(override.aes = list(size = 3, alpha = 1)) )
+
+ggsave("plot/fig6/main_6a_umap_overall.png", width = 7.5, height = 6, dpi = 600)
+```
+
+## suppfig 6a: seurat clusters + batch effects
+
+```{r}
+p <- DimPlot(all_, reduction = "umap", group.by = c("PatientID", "seurat_clusters")) + DimPlot(all_, reduction = "umap", group.by = c( "CellType"), cols =  hierarchy_colors, combine = F) 
+
+p %>%
+  set_alpha() & 
+  guides(color = guide_legend(override.aes = list(size = 3, alpha = 1)) )
+
+ggsave("plot/suppfig7/supp_7a_afterbc_all_2.png", width=20, height=5)
+```
+
+## fig 6b: split by cell status (top)
+
+```{r}
+ob_list <- SplitObject(all_, split.by = "cell_status")
+
+p <- lapply(X = ob_list, FUN = function(x) {
+  
+    DimPlot(x, reduction = "umap", group.by="CellType", split.by = "cell_status", 
+            cols = hierarchy_colors, pt.size=.5) %>%
+      set_alpha() +
+      theme(aspect.ratio = 1, strip.text = element_text(size = 14),
+            legend.key.height = unit(0.5, "cm")) + ggtitle("") + 
+      guides(color = guide_legend(override.aes = list(size = 3, alpha = 1)) )
+})
+
+p[[2]] + p[[1]] + p[[3]] + patchwork::plot_layout(ncol = 3, guides = "collect")
+
+ggsave("plot/fig6/main_6b_umap_celltype.png", width = 15, height = 5, dpi = 600)
+```
+
+## fig 6b: inflammation (middle)
+
+```{r}
+p <- FeaturePlot(all_, reduction = "umap", 
+                 split.by = "cell_status", features = "Inflammation", 
+                 pt.size = .8, order=TRUE, keep.scale = "feature") %>%
+  set_alpha()  & 
+  scale_colour_gradientn(colours = rev(brewer.pal(n = 11, name = "Spectral")),
+                         limits=c(-0.15,1), name = "Inflammatory\nScore") & 
+  theme(axis.title = element_text(size = 14), aspect.ratio = 1, 
+        title = element_text(size = 12), 
+        axis.title.y.right = element_blank()
+        ) 
+
+p + theme(legend.position = "right")
+
+ggsave("plot/fig6/main_6b_dimplot_infl.png", width = 14, height = 5, dpi = 600)
+
+```
+
+## fig 6b: boxplot of inflammation scores per cell per cell type (bottom)
+
+```{r}
+df <- FetchData(all_, vars = c("cell_status", "celltype", "CellType", "Inflammation"))
+ggplot(df, aes(x = celltype, y = Inflammation, fill = CellType)) +
+  geom_boxplot() +
+  scale_fill_manual(values = hierarchy_colors, guide = "none") +
+  theme_classic(base_size = 12) +
+  labs(x="", y="Inflammatory Score")+
+  facet_grid(~cell_status, drop = T, axes = "all") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+        aspect.ratio = 0.5)
+
+ggsave("plot/fig6/main_6b_boxplot_infl.png", width = 12, height = 3, dpi = 600)
+
+```
+
+## difference between patients
+- annotated based on distribution of each cell subpopulations
+  - primitive-like - when HSC, Prog and GMP are most of the malignant cells
+  - mature-like - when ProMono, Mono and cDC are most of the malignant cells
+- caveat: AML329 - though diagnosis was "monocytic", was annotated as primitive like
+
+```{r}
+df <- all_@meta.data %>%
+  select(SampleID := orig.ident, PatientID, CellType, cell_status) %>%
+  group_by(SampleID, CellType, cell_status, PatientID) %>%
+  summarise(n = n()) %>%
+  group_by(SampleID, cell_status) %>%
+  mutate(total = sum(n),
+         PercentDist = (n/total)*100,
+         CellType = factor(CellType, levels = rev(unique(CellType))) ) %>% 
+  ungroup() %>%
+  mutate(Day = gsub(".*-D", "", SampleID))
+
+write.csv(df, "output/supp/scrna/scrna_cell_dist_per_sampleid.csv", row.names = F)
+
+```
+
+## fig 6c: cell distribution bar plot
+
+```{r}
+patient_order <- read.csv("data/scrna/vangalen_sampleinfo.csv") %>%
+  filter(Sample %in% unique(all_$PatientID)) %>%
+  select(SampleID, Sample, Day := Days.from.Diagnosis, AML_subtype, Category) %>%
+  slice_min(order_by = Day, n=1) %>% arrange(desc(Category), SampleID)
+
+df <- read.csv("output/supp/scrna/scrna_cell_dist_per_sampleid.csv", check.names = F)
+df_1 <- df %>%
+  mutate(
+    category = case_when(
+      CellType %in% c("HSC-like", "Prog-like", "HSC", "Prog") ~ "primitive",
+      CellType %in% c("ProMono-like", "Mono-like", "cDC-like", "ProMono", "Mono", "cDC") ~ "mature",
+      CellType %in% c("GMP-like", "GMP") ~ "GMP",
+      CellType %in% c('ProB', 'B', 'Plasma', 'T', 'CTL', 'NK') ~ "lymphoid",
+      CellType %in% c('earlyEry', 'lateEry') ~ "erythroid",
+      .default = CellType
+    )
+  ) %>% 
+  group_by(SampleID, category, cell_status, total, Day) %>%
+  summarise(n = sum(n)) %>%
+  group_by(SampleID, cell_status) %>%
+  mutate(PercentDist = (n/total)*100) %>%
+  filter(Day == "0") %>%
+  arrange(PercentDist) %>%
+  mutate(SampleID = factor(SampleID, levels = patient_order$SampleID))
+
+df_1 %>%
+  mutate(category = factor(category, levels = c("primitive", "GMP", "mature", "lymphoid", "erythroid", "pDC"))
+         ) %>%
+ggplot(. , aes(x = cell_status, y = PercentDist, fill = category)) +
+  geom_col(aes (color = cell_status), position = "stack", width = 0.7, linewidth = 1.5) +
+  geom_col(position = "stack", width = 0.6, linewidth = 1) +
+  geom_text(
+      aes(label = ifelse(PercentDist>2, paste0(round(PercentDist,1)), "" ) ),
+      position = position_stack(vjust = 0.5), size = 3,color = "black" 
+  ) +
+  
+  scale_color_manual(values = c("red", "royalblue")) +
+  scale_fill_manual(
+    values = c(primitive = "#ce9866", GMP = "#FDB462", 
+               mature = "#B3DE69", lymphoid = "#BEBADA", 
+               erythroid = "#F781BF", pDC = "#8DD3C7"), 
+    labels = c("primitive\n(HSC, Prog)", "GMP", "mature\n(ProMono, Mono, cDC)",
+               "lymphoid\n(ProB, B, Plasma, T, CTL, NK)", 
+               "erythroid", "pDC") ) +
+  scale_y_continuous(expand = c(0, 1)) +
+  labs(y = "Percent Distribution (%)", x = "Patient Sample (Day 0)") +
+  facet_wrap(~SampleID, ncol = 6, strip.position = "bottom", 
+             labeller = labeller(SampleID = function(x) gsub("-D0", "", x)) ) +
+  theme_classic() +
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank(), 
+        legend.key.size = unit(0.3, "cm"), aspect.ratio = 2.5, 
+        legend.position = "bottom", legend.direction = "vertical")
+
+ggsave(paste0("plot/fig6/main_6c_cellpop_D0.png"), width = 7, height = 6, dpi = 600)
+```
+
+## fig 6d/suppfig 6b: inter-patient heterogenenity
+```{r}
+temp <- all_@meta.data %>%
+  select(SampleID := orig.ident, PatientID, CellType, cell_status, Inflammation) %>%
+  rownames_to_column("cell.barcode") %>%
+  mutate(Day = gsub(".*-D", "", SampleID) ) %>%
+  group_by(SampleID, Day) %>% # overall inflammation score per patient
+  summarise(Inflammation = mean(Inflammation)) %>%
+  filter(Day == "0") %>%
+  inner_join(., df_1)
+  
+temp %>%
+  # filter(category %in% c("primitive", "GMP", "mature")) %>% # main fig
+  filter(!category %in% c("primitive", "GMP", "mature")) %>% # supp fig
+  mutate(category = factor(category, levels = c("primitive", "GMP", "mature", "lymphoid", "erythroid", "pDC")),
+         SampleID = factor(SampleID, levels = patient_order$SampleID)
+         ) %>%
+ggplot(., aes(x = PercentDist, y = Inflammation)) +
+  geom_smooth(method = "lm", color = "black", se = F, size = 0.5) +
+  stat_cor(method = "spearman", size = 3) +
+  geom_point(aes(fill = SampleID), size = 2, alpha = .9, shape = 21, color = "grey10") +
+  scale_fill_brewer(palette = "Paired") +
+  theme_classic(base_size = 12) +
+  labs(x="Percent Distribution (%)", y = "Mean Inflammatory Score") +
+  facet_grid(category~cell_status, drop = T, axes = "all") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+        aspect.ratio = 0.5, legend.key.size = unit(0.3, "cm"))
+
+# ggsave(paste0("plot/fig6/main_6d_cellpop_inflam_main.png"), width = 7, height = 6, dpi = 600)
+ggsave(paste0("plot/suppfig7/supp_7b_cellpop_inflam_supp.png"), width = 4.5, height = 6, dpi = 600)
+```
+
+# DEG: Differential between malignant and normal
+- limiting to AML samples
+- limiting to myeloid-monocytic lineage; excluding eryth
+- refer to src/preprocess/6.scrna_mast.R
+```{r}
+selected <- subset(all_, subset = celltype %in% c("GMP", "Prog", "ProMono", "HSC", "cDC", "Mono")) 
+```
+
+## lineage specific: DEG between malignant and normal
+- identifying genes/programs difference between the 2 differentiation stage
+
+- Malignant Mature-like vs. Malignant Primitive-like
+- Nonmalignant Mature-like vs. Nonmalignant Primitive-like
+- Normal Mature-like vs. Normal Primitive-like
+
+ 
+## tumor/normal specific: DEG between primitive and mature
+- identifying genes/programs difference between the cell types in mature myeloid compartments ("ProMono", "Mono", "cDC")
+
+- Mature-like Malignant vs. Mature-like Normal
+- Mature-like Nonmalignant vs. Mature-like Normal
+- Mature-like Nonmalignant vs. Mature-like Malignant
+
+
+# Trajectory inference analysis
+
+## slingshot
+- limiting to AML samples
+- limiting to myeloid-monocytic lineage; excluding eryth
+
+- table(selected$seurat_clusters)
+   0    1    2    3    4    5    6    7    8    9   10   11   12   13   14   15 
+7421   33 4779 3979   10 1789   92 1297   41  921  352    7  247  256   35   89 
+  16 
+  59 
+  - 1, 4, 6, 8, 11, 14, 15, 16 - removed for small cluster size (<100)
+  - 10 was removed due to overlaps with erythroid pop; 12 removed due to distinctness from other HSC pop
+
+(n=20442 after filtering)
+   AML_malignant AML_nonmalignant   Healthy_normal 
+           12826             3376             4240 
+```{r}
+table(selected$seurat_clusters)
+table(selected$celltype, selected$seurat_clusters)
+
+(DimPlot(selected, reduction = "umap", label = T, pt.size = .5, group.by = c("seurat_clusters")) + DimPlot(selected, reduction = "umap", label = T, pt.size = .5, group.by = c( "CellType"), cols = hierarchy_colors)) %>% set_alpha() & theme(aspect.ratio = 1, legend.position = "none")
+# ggsave("plot/other/selected_bf_drop.png", width = 11, height = 5, dpi = 400)
+
+## removing small clusters
+clusters_to_remove <- c(1, 4, 6, 8, 10, 11, 12, 14, 15, 16)
+selected <- subset(selected, subset = seurat_clusters %in% clusters_to_remove, invert = TRUE)
+selected$seurat_clusters <- droplevels(selected$seurat_clusters)
+
+(DimPlot(selected, reduction = "umap", label = T, pt.size = .5, group.by = c("seurat_clusters")) + DimPlot(selected, reduction = "umap", label = T, pt.size = .5, group.by = c( "CellType"), cols = hierarchy_colors)) %>% set_alpha() & theme(aspect.ratio = 1, legend.position = "none")
+# ggsave("plot/other/selected_af_drop.png", width = 11, height = 5, dpi = 400)
+
+saveRDS(selected, "output/rds/scrna_selected_obj.rds")
+```
+
+```{r}
+pto <- slingshot(Embeddings(selected, "umap"),
+                        clusterLabels = selected$seurat_clusters,
+                        start.clus = 0, end.clus = c(7,13)) #
+
+
+saveRDS(pto, "output/rds/scrna_selected_pseudotime_slingshot.rds")
+```
+
+
+## Trade-seq: Trajectory inference analysis
+
+```{r}
+counts_filt <- FetchData(selected, vars=VariableFeatures(selected), layer="counts")
+counts_filt <- t(counts_filt)
+
+BPPARAM <- BiocParallel::SnowParam(workers = 8, progressbar = TRUE)
+
+sce <- fitGAM(counts = counts_filt, 
+             sds = pto, 
+             parallel=TRUE, 
+             BPPARAM = BPPARAM,
+             nknots = 6) # Reduced nknots slightly for speed if needed
+
+saveRDS(sce, "output/rds/scrna_selected_pseudotime_fitGAM.rds")
+```
+
+- within lineage comparisons
+  - associationTest: assesses whether average gene expression is associated with pseudotime - a particular lineage
+  
+- Between-lineage comparisons
+  - patternTest: implements a statistical method that checks whether the smoothed gene expression is equal along pseudotime between two or multiple lineages.
+  
+```{r}
+associationTest(sce, lineages = T) %>%
+  rownames_to_column("feature_id") %>%
+  arrange(-waldStat, -meanLogFC) %>%
+  write.csv(., "output/supp/scrna/selected_avgGE_assoc_pseudotime.csv", row.names = F)
+
+patternTest(sce, global = TRUE, pairwise = TRUE) %>%
+  rownames_to_column("feature_id") %>% 
+  filter(pvalue < 0.05, !is.na(pvalue)) %>% 
+  arrange(-waldStat) %>%
+  write.csv(., "output/supp/scrna/selected_patterntest.csv", row.names = F)
+```
+
+# plots & tbl
+
+## load data
+```{r}
+load_pseudotime_data <- function() {
+  all_selected <- readRDS("output/rds/scrna_selected_obj.rds")
+  pto <- readRDS("output/rds/scrna_selected_pseudotime_slingshot.rds")
+  sce <- readRDS("output/rds/scrna_selected_pseudotime_fitGAM.rds")
+  cluster_name <- c(`0` = "HSC", `3` = "Prog", `9` = "GMP", `5` = "ProMono", `2` = "Mono", `7` = "cDC", `13` = "Mono")
+
+  filt_counts <- FetchData(all_selected, vars = VariableFeatures(all_selected), layer="counts")
+  sds <- SlingshotDataSet(pto)
+  time <- slingAvgPseudotime(pto)
+
+  df <- data.frame(slingReducedDim(sds),
+                   cl = all_selected@meta.data$seurat_clusters,
+                   pseudotime = time,
+                   celltype = all_selected$CellType) %>%
+    mutate(cluster = as.character(as.numeric(cl)))
+
+  curves <- slingCurves(sds, as.df = TRUE)
+  mst <- slingMST(sds, as.df = TRUE)
+  mst$cluster_name <- cluster_name[mst$Cluster]
+
+  all_selected$pseudotime <- time
+
+  cluster_centers <- df %>%
+    group_by(celltype) %>%
+    summarize(umap_1 = median(umap_1), umap_2 = median(umap_2))
+
+  return(list(
+    all_selected = all_selected,
+    pto = pto,
+    sce = sce,
+    filt_counts = filt_counts,
+    sds = sds,
+    time = time,
+    df = df,
+    curves = curves,
+    mst = mst,
+    cluster_name = cluster_name,
+    cluster_centers = cluster_centers
+  ))
+}
+```
+
+  Lineage  cluster_name   
+  <chr>    <chr>          
+1 Lineage1 Lineage -> cDC 
+2 Lineage2 Lineage -> Mono
+3 Lineage3 Lineage -> GMP 
+
+```{r}
+pseudotime_list <- load_pseudotime_data()
+list2env(pseudotime_list, envir = .GlobalEnv)
+HVGs <- VariableFeatures(all_selected)
+
+pseudotime_association <- read.csv("output/supp/scrna/selected_avgGE_assoc_pseudotime.csv") %>%
+  filter(pvalue_1 < 0.01 | pvalue_2 < 0.01 | pvalue_3 < 0.01)
+
+patternRes <- read.csv("output/supp/scrna/selected_patterntest.csv")
+```
+
+## tbl 19: overlapping DEG and pseudotime outcomes
+```{r}
+# 1) Read DEG table + add significance flag
+read_deg <- function(path, p_adj = 0.05, lfc = 0.58) {
+  read.csv(path) %>%
+    mutate(sig = p_val_adj < p_adj & abs(avg_log2FC) > lfc) %>%
+    arrange(avg_log2FC, p_val_adj)
+}
+
+# requires reference, HVGs, pseudotime_association, patternRes 
+# 2) Build 3-way overlap + labels + "same direction" + common annotations
+make_overlap_df <- function(a, b, c, set_map) {
+  a <- read_deg(a)
+  b <- read_deg(b)
+  c <- read_deg(c)
+  out <- full_join(a, b, by = "X", suffix = c("", ".1")) %>%
+    full_join(c, by = "X", suffix = c("", ".2")) %>%
+    filter(sig | sig.1 | sig.2) %>% # all must be non-NA
+    mutate(
+      s0 = replace_na(sig,   FALSE),
+      s1 = replace_na(sig.1, FALSE),
+      s2 = replace_na(sig.2, FALSE),
+      pattern = paste0(as.integer(s0), as.integer(s1), as.integer(s2)),
+      set = dplyr::recode(pattern, !!!set_map, .default = "NA"),
+      # direction agreement (only compare where both contrasts exist)
+      direction = sign(avg_log2FC),
+      direction.1 = sign(avg_log2FC.1),
+      direction.2 = sign(avg_log2FC.2),
+      same = dplyr::case_when(
+        pattern == "111" ~ direction == direction.1 & direction.1 == direction.2,
+        pattern == "110" ~ direction == direction.1,
+        pattern == "101" ~ direction == direction.2,
+        pattern == "011" ~ direction.1 == direction.2,
+        pattern %in% c("100", "010", "001") ~ TRUE,
+        TRUE ~ NA
+      ),
+      pattern = paste0("s", pattern),
+      is_inflam = X %in% reference$gene_id,
+      is_variable = X %in% HVGs,
+      is_pseudotime_ass = X %in% pseudotime_association$feature_id,
+      is_diff_lineage_pattern = X %in% patternRes$feature_id
+    ) %>%
+    select(-s0, -s1, -s2) %>%
+    filter(is_variable)
+  out
+}
+
+```
+
+### overlapping genes: malignant vs normal
+- looking at genes that are contributing to "tumor" properties between malignant and normal (tumor intrinsic vs extrinsic)
+- what genes cause malignant mature-like cells to be different from normal?
+  - do they have inflammation genes certain persistant/absent programs
+
+                   mature primitive
+  AML_malignant      5906      6920
+  AML_nonmalignant   2559       817
+  Healthy_normal     1450      2790
+
+- focusing on mature cells - understanding what are the different programs contributing to inflammation
+- tumor intrinsic - malignant vs nonmalignant/normal (not included)
+  - how does it affect the TME
+- extrinsic - nonmalignant vs normal
+  - what makes their inflammation different
+
+      abnormal in AML                common    disease vs healthy 
+                  312                    51                   145 
+  genes affecting TME         TME extrinsic       tumor instrinic 
+                   51                    78                   124 
+tumor intrinsic (AML) 
+                   63 
+
+```{r}
+df_malignant_normal <- make_overlap_df(
+  a = "output/supp/scrna/findmarkers_mono_promono_cDC_malignant_normal.csv",
+  b = "output/supp/scrna/findmarkers_mono_promono_cDC_nonmalignant_normal.csv",
+  c = "output/supp/scrna/findmarkers_mono_promono_cDC_malignant_nonmalignant.csv",
+  set_map = c(
+    "111" = "common",
+    "011" = "genes affecting TME",
+    "110" = "abnormal in AML",
+    "101" = "tumor instrinic",
+    "010" = "TME extrinsic",
+    "001" = "tumor intrinsic (AML)",
+    "100" = "disease vs healthy")
+)
+
+table(df_malignant_normal$set)
+write.csv(df_malignant_normal, "output/supp/scrna/deg_malignant_normal_pseudo.csv", row.names = F)
+```
+
+### overlapping genes: primitive vs mature
+- looking at genes within malignant or normal cells that causes the activation of inflammation
+  - for normal comparison - looks at the healthy template of differentiation switch
+  - are the activation/causes of inflammation different - genes that are upregulated exclusively along the aberrant malignant trajectory
+
+        abnormal in AML             common diff        diff lost in TME          malignant diff 
+                    103                     445                     238                     420 
+malignant specific diff             normal diff                TME diff 
+                     49                     362                      14 
+
+```{r}
+df_differentiation <- make_overlap_df(
+  a = "output/supp/scrna/findmarkers_normal_primitive_mature.csv",
+  b = "output/supp/scrna/findmarkers_malignant_primitive_mature.csv",
+  c = "output/supp/scrna/findmarkers_nonmalignant_primitive_mature.csv",
+  set_map = c(
+    "111" = "common diff",
+    "011" = "abnormal in AML",
+    "110" = "diff lost in TME",
+    "101" = "malignant specific diff",
+    "010" = "malignant diff",
+    "001" = "TME diff",
+    "100" = "normal diff")
+)
+
+write.csv(df_differentiation, "output/supp/scrna/deg_primitive_mature_pseudo.csv", row.names = F)
+table(df_differentiation$set)
+```
+
+### saving overlap
+- filtering for genes that are
+  - sig diff between anyone of the comparisons between cell status in mature myeloid compartments
+  - genes expressed in at least 10% in all groups
+```{r}
+df_differentiation_1 <- df_differentiation %>%
+  filter(if_any(starts_with("pct"), ~ .x > 0.1) ) %>% 
+  select(1:25) %>%
+  left_join(df_malignant_normal %>% filter(if_any(starts_with("pct"), ~ .x > 0.1) ) , ., by="X", suffix = c(".mature", ".diff"))
+  
+write.csv(df_differentiation_1, paste0("output/scrna_deg_all.csv"), row.names = F)
+```
+
+## plot
+## fig 6e: overall UMAP + pseudotime curves
+```{r}
+p <- DimPlot(object = all_selected, reduction = "umap", pt.size=.3, label = T) %>%
+  set_alpha() + theme(aspect.ratio = 1, legend.position = "none")
+
+q <- DimPlot(object = all_selected, reduction = "umap", group.by="CellType", shape.by = "cell_status", cols = hierarchy_colors, pt.size=.3, shuffle = T) %>%
+  set_alpha() + 
+  scale_shape_manual(values = c(17,16,15), name = NULL, 
+                     labels = c("AML_malignant\n(n=12,826)", "AML_nonmalignant\n(n=3,376)", "Healthy_normal\n(n=4,240)")) +
+  theme(aspect.ratio = 1, legend.key.size = unit(0.3, "cm")) + ggtitle("") +
+  guides(shape = guide_legend(override.aes = list(size = 3)), 
+         color = guide_legend(ncol=2, override.aes = list(size = 3)))
+
+labelling <- mst %>%
+  arrange(Order) %>%
+  group_by(Lineage) %>%
+  filter(row_number() == 1 | row_number() == n()) %>% ungroup() %>% distinct(umap_1, umap_2, cluster_name)
+
+r <- FeaturePlot(object = all_selected, reduction = "umap", features = "pseudotime", pt.size=.3) %>%
+  set_alpha() + 
+  viridis::scale_color_viridis(name="Pseudotime", option = "C") +
+  theme(aspect.ratio = 1, legend.position = "inside", 
+        legend.position.inside = c(0.7, 0.2), legend.direction = "horizontal", 
+        legend.key.width = unit(0.5, "cm"), legend.title.position = "top") + 
+  ggtitle("") + 
+  geom_point(data=mst %>% arrange(Order), aes(x=umap_1, y=umap_2), size = 3) +
+  geom_path(data=mst %>% arrange(Order), aes(x=umap_1, y=umap_2, group=Lineage), lwd = 1) +
+  ggrepel::geom_text_repel(data=labelling, aes(x=umap_1, y=umap_2, label=cluster_name), bg.colour = "white",  bg.r = 0.15, max.overlaps = Inf, nudge_x = -1.5)
+  
+p+q+r 
+
+ggsave("plot/fig6/main_6e_selected_umap.png", dpi = 600, units = "in", width = 15, height = 4)
+```
+
+## fig 6e: transition of cell types along the lineage pseudotime
+
+```{r}
+pseudotime_df <- slingPseudotime(sds)
+df <- FetchData(object = all_selected, vars = c("CellType", "celltype","cell_status"), clean = "none") %>%
+  cbind(pseudotime_df)
+colnames(df)[4:6] <- c("HSC \u2192 cDC", "HSC \u2192 Mono", "HSC \u2192 GMP")
+
+temp <- df %>%
+  pivot_longer(4:6, names_to = "Lineage", values_to = "pseudotime") %>%
+  filter(!is.na(pseudotime)) %>%
+  arrange(pseudotime) %>%
+  mutate(Lineage = factor(Lineage, levels = rev(c("HSC \u2192 cDC", "HSC \u2192 Mono", "HSC \u2192 GMP"))),
+         cell_status = factor(cell_status, levels = c("Healthy_normal", "AML_nonmalignant", "AML_malignant"))
+         )
+
+ggplot(temp, aes(x=pseudotime, y=cell_status, color=CellType, fill=CellType)) +
+  geom_tile(alpha=0.5) +
+  scale_color_manual(values = hierarchy_colors, guide = "none") +
+  scale_fill_manual(values = hierarchy_colors) +
+  facet_grid(Lineage ~ ., drop = T, scales = "free_y", axes = "all") +
+  labs(y = "") +
+  theme_classic() +
+  theme(aspect.ratio = 0.1, strip.text.y = element_text(angle = 0), legend.key.size = unit(0.2, "cm"), text = element_text(size = 20)) + 
+  guides(fill = guide_legend(ncol = 2, override.aes = list(alpha = 1))) 
+
+ggsave("plot/fig6/main_6e_pseudotime_celltype.png", width = 12, height = 4, dpi = 600)
+```
+
+## fig 6f/suppfig 7c: transition of genes/signature along the pseudotime
+
+- refer to function like plotSmoothers and GeneTrendCurve.Slingshot
+```{r}
+plot_pseudotime <- function(gene, file_prefix = NULL){
+  labelling <- unique(mst[,c(4,6)]) %>%
+    group_by(Lineage) %>%
+    slice_tail(n = 1) %>% 
+    mutate(Lineage = paste0("Lineage",Lineage),
+           cluster_name = paste0("HSC \u2192 ",cluster_name))
+  
+  pseudotime_df <- slingPseudotime(sds)
+  df <- FetchData(object = all_selected, vars = c(gene, "cell_status"), clean = "none") %>%
+    rownames_to_column("cell") %>%
+    cbind(pseudotime_df) %>%
+    pivot_longer(gene, names_to = "Gene", values_to = "Expression") %>%
+    pivot_longer(colnames(pseudotime_df), names_to = "Lineage", values_to = "Pseudotime") %>%
+    left_join(labelling) %>%
+    filter(!is.na(Pseudotime)) %>%
+    mutate(cluster_name = factor(cluster_name, levels = c("HSC \u2192 GMP", "HSC \u2192 Mono", "HSC \u2192 cDC")))
+  
+  p <- ggplot(df, aes(x=Pseudotime, y=Expression, color=cell_status)) +
+    geom_point(size=.01, alpha=.1) +
+    geom_smooth(se = F, lwd = 1) + #"loess"
+    scale_color_manual(values = color_celltype, name = "Status") +
+    labs(title = gene) +
+    theme_classic() + 
+    theme(aspect.ratio = .75, text = element_text(size = 12),
+          panel.grid.major = element_line(colour = "grey", linetype = 2),
+          legend.position = "bottom", legend.direction = "vertical", 
+          legend.text = element_text(size = 10),
+          legend.key.size = unit(0.3, "cm")) +
+    facet_wrap(~cluster_name, ncol = 1)
+  
+  if (!is.null(file_prefix)) {
+    ggsave(plot = p, paste0(file_prefix, gene, ".png"), width = 4, height = 8, dpi = 600)
+  } 
+  return(p)
+}
+```
+
+### selecting specific inflammation & differentiated related genes
+
+- inflammatory related genes that are significantly different in malignant_vs_normal in mature myeloid compartment; that is also apparent in primitive_vs_mature
+
+```{r}
+## looking at trends for each gene individually
+for (i in df_differentiation_1$X[df_differentiation_1$is_inflam]) {
+  plot_pseudotime(i, file_prefix="plot/other/scrna_pseudo_")
+}
+```
+
+- 43/61 was selected for association with immune/myeloid/aml related genes
+- plotting only cdc and mono lineage; keeping gmp as supplement
+```{r}
+## heatmap
+selected_gene <- list(
+  "mature\nmyeloid" = c("CD14", "CD36", "CX3CR1", "MAFB", "MNDA", "FCGR3A", "FCN1",
+                     "AZU1", "MPO", "CTSG", "ELANE", "SELL", "SRGN"),
+  "immune\nregulation" = c("HLA-DPA1", "HLA-DPB1", "HLA-DQA1", "HLA-DRB1", "CD74", "CTSS", 
+                        "FCER1G", "TYROBP", "LILRB2", "LILRA5"),
+  "proinflammatory\nsignaling" = c("CXCL8", "CCL5", "SERPINA1", 
+                                "S100A8", "S100A9", "S100A12", 
+                                "C5AR1", "NCF2", "MAP3K8", "CFD"),
+  "aml\ncore" = c("CDK6","HOXA9", "MYB"),
+  "stress\nmetabolism\nother" = c("FOS", "HSPA5", "PMAIP1", "CLU", "MGST1", "CYP1B1")
+)
+temp <- names(selected_gene)
+selected_gene <- stack(selected_gene)
+colnames(selected_gene ) <- c("gene", "category")
+selected_gene$category <- factor(selected_gene$category, levels = temp)
+
+lineage_level <- c("HSC \u2192 cDC", "HSC \u2192 Mono", "HSC \u2192 GMP")
+pseudotime_df <- slingPseudotime(sds) %>%
+  as.data.frame()
+colnames(pseudotime_df ) <- lineage_level
+
+df <- FetchData(object = all_selected, vars = c(selected_gene$gene, "CellType", "celltype","cell_status"), clean = "none", layer = "scale.data") 
+
+n = 1
+df_1 <- df
+df_1$Lineage <- pseudotime_df[,n]
+df_1 <- df_1 %>% filter(!is.na(Lineage)) %>% arrange(Lineage)
+
+ha1 <- columnAnnotation(
+  cell_status = df_1$cell_status,
+  celltype = df_1$CellType,
+  col = list(
+    cell_status = color_celltype,
+    celltype = hierarchy_colors[c(1,2,5:16)]
+  ),
+  show_annotation_name = F
+)
+
+mat <- df_1[,selected_gene$gene] %>% as.matrix() %>% t()
+col_fun <- circlize::colorRamp2(c(10, 5, 2.5, 1.83, 0.9, 0.45, 0, -2), c("#000004FF", "#420A68FF", "#932667FF", "#DD513AFF", "#FCA50AFF", "#FCFFA4FF", "lightyellow", "white"))
+
+hm1 <- Heatmap(
+  mat, top_annotation = ha1, col = col_fun, border_gp = gpar(col = "grey30"),
+  show_row_dend = F, show_column_dend = F,
+  show_column_names = F, cluster_columns = F, 
+  cluster_rows = T, clustering_distance_rows = "euclidean", 
+  column_split = df_1$cell_status, column_title = lineage_level[n],
+  row_split = selected_gene$category, row_title_rot = 0, row_title_gp = gpar(fontsize = 11), 
+  cluster_row_slices = F, show_row_names = F,
+  name = "scaled", use_raster = T, raster_device = "png", raster_quality = 3,
+  heatmap_legend_param = list(border = "black", labels_gp = gpar(fontsize = 10))
+)
+
+n = 2 # change to 3 for supp figure
+df_1 <- df
+df_1$Lineage <- pseudotime_df[,n]
+df_1 <- df_1 %>% filter(!is.na(Lineage)) %>% arrange(Lineage)
+
+ha1 <- columnAnnotation(
+  cell_status = df_1$cell_status,
+  celltype = df_1$CellType,
+  col = list(
+    cell_status = color_celltype,
+    celltype = hierarchy_colors[c(1,2,5:16)]
+  ),
+  show_annotation_name = T
+)
+
+mat <- df_1[,selected_gene$gene] %>% as.matrix() %>% t()
+
+hm2 <- Heatmap(
+  mat, top_annotation = ha1, col = col_fun, border_gp = gpar(col = "grey30"),
+  show_row_dend = F, show_column_dend = F,
+  show_column_names = F, cluster_columns = F, 
+  cluster_rows = T, clustering_distance_rows = "euclidean", 
+  column_split = df_1$cell_status, column_title = lineage_level[n],
+  row_split = selected_gene$category, row_title_rot = 0, row_title_gp = gpar(fontsize = 11), 
+  cluster_row_slices = F, row_names_centered = T,
+  name = "scaled", use_raster = T, raster_device = "png", raster_quality = 3,
+  heatmap_legend_param = list(border = "black", labels_gp = gpar(fontsize = 10))
+)
+```
+
+```{r}
+png("plot/fig6/main_6e_hm_lineage_1_2.png", width = 9.5, height = 7.5, units = "in", res = 600)
+draw(hm2 + hm1, auto_adjust = F, ht_gap = unit(-1, "mm"), merge_legends = T)
+
+# png("plot/suppfig7/supp_7c_hm_lineage_3.png", width = 7, height = 7.5, units = "in", res = 600)
+# draw(hm2, merge_legends = T)
+```
+
+# session info
+```{r}
+sessionInfo()
+```
+
