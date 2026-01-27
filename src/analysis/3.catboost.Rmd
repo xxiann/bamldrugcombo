@@ -1,5 +1,5 @@
 ---
-title: "Association between genomic/clinical data and drug response"
+title: "Association between genomic/clinical data and drug response ()"
 description: "catboost between 101 features and 170 combinations & statistial associations"
 Date: "3 jan 2025"
 output: 
@@ -32,7 +32,6 @@ set.seed(13)
 
 source("src/function/colour.R")
 source("src/function/loading_data.R")
-listofnames <- init_drugnames()
 ```
 
 # association between features and drug response
@@ -350,7 +349,7 @@ perf_summary_perfold <- perf_summary_df %>%
 write.csv(perf_summary_perfold, "output/model_perf_summary_perfold.csv", row.names = F)
 
 perf_summary <- perf_summary_perfold %>%
-  select(Combination, n_samples, n_sig_fold, category, median_CI, Better_combi) %>%
+  select(Combination, n_samples, n_sig_fold, category, median_CR, Better_combi) %>%
   distinct_all() 
 
 table(perf_summary$category)
@@ -419,7 +418,7 @@ write.csv(feature_summary_df, "output/supp/ML/feature_summary_df.csv", row.names
 ```{r}
 na_mask <- perf_summary_perfold %>%
   mutate(fold = paste0("fold", fold) ) %>%
-  dplyr::select(Combination, fold, sig_kendall, n_samples, n_sig_fold, category, median_CI, Better_combi) %>%
+  dplyr::select(Combination, fold, sig_kendall, n_samples, n_sig_fold, category, median_CR, Better_combi) %>%
   filter(category != "poor")
 
 x <- feature_summary_df[,c(1,2,7:11, 17)] %>% ungroup() %>%
@@ -429,7 +428,7 @@ x <- feature_summary_df[,c(1,2,7:11, 17)] %>% ungroup() %>%
 
 ## keeping only sig folds
 unstable_feature_sum <- x %>% filter(category == "unstable", sig_kendall == T) %>%
-  group_by(Combination, feature, category, median_CI, Better_combi, n_sig_fold, n_samples, type) %>%
+  group_by(Combination, feature, category, median_CR, Better_combi, n_sig_fold, n_samples, type) %>%
   summarise(mean_abs_shap = mean(mean_abs_shap))  %>%
   ungroup() %>%
   group_by(Combination, type) %>%
@@ -442,7 +441,7 @@ write.csv(unstable_feature_sum, "output/supp/ML/unstable_feature_summary_df.csv"
 
 ## using all folds for robustness
 stable_feature_sum <- x %>% filter(category == "stable") %>%
-  group_by(Combination, feature, category, median_CI, Better_combi, n_sig_fold, n_samples, type) %>%
+  group_by(Combination, feature, category, median_CR, Better_combi, n_sig_fold, n_samples, type) %>%
   summarise(mean_abs_shap = mean(mean_abs_shap))  %>%
   ungroup() %>%
   group_by(Combination, type) %>%
@@ -454,7 +453,7 @@ stable_feature_sum <- x %>% filter(category == "stable") %>%
 write.csv(stable_feature_sum, "output/supp/ML/stable_feature_summary_df.csv", row.names = F)
 ```
 
-## tbl9: saving all summary
+## tbl 9: saving all summary
 - saving per feature per model averaged across selected folds
 - saving poor models at the bottom
 ```{r}
@@ -521,14 +520,14 @@ X_all <- df[3:103]
 rownames(X_all) <- df$Sample_ID
 Y_all <- df[104:273]
 rownames(Y_all) <- df$Sample_ID
+
+categories <- data.frame(feature = colnames(X_all),
+                         type = c(rep("numeric", 15), rep("category", 86))) 
 ```
 
 ## fig 4d: heatmap of stable + unstable shap (n=43)
 
 ```{r}
-categories <- data.frame(feature = colnames(X_all),
-                         type = c(rep("numeric", 15), rep("category", 86))) 
-
 df <- rbind(stable_feature_sum, unstable_feature_sum)
 
 ## matrix of rank for heatmap
@@ -581,13 +580,14 @@ hm2 <- Heatmap(df_wide_num, name = "Numeric SHAP Rank",
         row_split = split
         )
 
-png("plot/fig4/main_4d_catboost_hm.png", res=300, width = 0.15*ncol(df_wide) + 5, height = 0.15*nrow(df_wide) + 5, units = "in")
-draw(hm2 + hm1, heatmap_legend_side = "bottom")
+# png("plot/fig4/main_4d_hm_catboost.png", res=600, width = 0.15*ncol(df_wide) + 5, height = 0.15*nrow(df_wide) + 5, units = "in", family = "Arial", bg = "transparent")
+Cairo::CairoPDF("plot/fig4/main_4d_hm_catboost.pdf",  width = 0.15*ncol(df_wide) + 5, height = 0.15*nrow(df_wide) + 5, bg = "transparent", family = "Arial")
+draw(hm2 + hm1, heatmap_legend_side = "bottom", background = "transparent")
 
 ```
 
 
-## tbl10a & fig 4c: scatterplot across models
+## tbl 10a & fig 4c: scatterplot across models
 ```{r}
 df <- rbind(stable_feature_sum, unstable_feature_sum) %>%
   filter(mean_abs_shap != 0, # filtering out uninformative features
@@ -617,7 +617,7 @@ annotating_features <- cbind(categories,
 df <- left_join(df, annotating_features)
 write.csv(df, "output/top_feature_summary_df.csv", row.names = F)
 
-df %>%
+p <- df %>%
   ggplot(., aes(x =mean_rank, y = sd_rank, label = feature, size = n_model, color = category, shape = type)) +
   geom_point(alpha = 0.7) +
   ggrepel::geom_text_repel(size = 3, max.overlaps = 17) +
@@ -633,10 +633,11 @@ df %>%
        y = "Rank Standard Deviation (lower = more stable)") +
   theme(aspect.ratio = 1) +
   guides(color = guide_legend(override.aes = list(label="", size=3) ),
-         shape = guide_legend(override.aes = list(size=3) )) 
+         shape = guide_legend(override.aes = list(size=3) )) +
+  theme_pdf
 
-ggsave("plot/fig4/main_4c_global_shap.png", width=6.5, height=7)
-
+ggsave(plot = p, "plot/fig4/main_4c_scatterplot_global_shap.png", width=6.5, height=5.5, dpi=600, bg = "transparent")
+ggsave(plot = p, "plot/fig4/main_4c_scatterplot_global_shap.pdf", width=6.5, height=5.5, bg = "transparent", device = cairo_pdf)
 ```
 
 ## observation (using stable & unstable only)
@@ -689,7 +690,7 @@ plot_selected_feature <- function(selected, type = "category", rank_ = 3, keep_ 
   
   ## load
   selected_feature <- all_feature_sum %>%
-    filter(feature %in% selected , median_CI <= 1) %>%
+    filter(feature %in% selected , median_CR <= 1) %>%
     group_by(Combination) %>%
     mutate(keep = sum(rank <= rank_)) %>%
     filter(keep >= keep_ )
@@ -744,29 +745,33 @@ plot_selected_feature <- function(selected, type = "category", rank_ = 3, keep_ 
 ### fig 4e: selected mutation
 
 ```{r}
-selected = c("FLT3", "NRAS", "DNMT3A", "NPM1")
-plot_selected_feature(selected, type = "category", rank_ = 3, keep_ = 1)
+selected = c("FLT3", "NPM1", "NRAS", "DNMT3A")
+p <- plot_selected_feature(selected, type = "category", rank_ = 3, keep_ = 1) + 
+  theme_pdf
 
-ggsave(paste0("plot/fig4/main_4e_mutation.png"), dpi = 600, width = 8.5, height =6)
-
+ggsave(plot = p, "plot/fig4/main_4e_mutation.png", width = 8.5, height = 5, dpi = 600, bg = "transparent")
+ggsave(plot = p, "plot/fig4/main_4e_mutation.pdf", width = 8.5, height = 5, bg = "transparent", device = cairo_pdf)
 ```
 
 ### fig 4f: selected markers
 ```{r}
 selected = c("CD117", "MPO", "CD11b", "CD64", "CD14", "FAB_subtype")
-plot_selected_feature(selected, type = "category", rank_ = 10, keep_ = 2)
+p <- plot_selected_feature(selected, type = "category", rank_ = 10, keep_ = 2) + 
+  theme_pdf
 
-ggsave(paste0("plot/fig4/main_4f_markers.png"), dpi = 600, width = 11, height =6)
-
+ggsave(plot = p, "plot/fig4/main_4f_markers.png", width = 11, height = 5, dpi = 600, bg = "transparent")
+ggsave(plot = p, "plot/fig4/main_4f_markers.pdf", width = 11, height = 5, bg = "transparent", device = cairo_pdf)
 ```
 
 ## supp fig 5a: selected numerical
 
 ```{r}
 selected = c("percentMonocytesPB", "percentBlastsBM", "Age")
-plot_selected_feature(selected, type = "numeric", rank_ = 5, keep_ = 2) + theme(text = element_text(size=11))
+p <- plot_selected_feature(selected, type = "numeric", rank_ = 5, keep_ = 2) + theme(text = element_text(size=11)) + 
+  theme_pdf
 
-ggsave(paste0("plot/suppfig5/supp_5a_numeric.png"), dpi = 600, width = 7.5, height =5)
+ggsave(plot = p, "plot/suppfig5/supp_5a_numeric.png", width = 7.5, height = 5, dpi = 600, bg = "transparent")
+ggsave(plot = p, "plot/suppfig5/supp_5a_numeric.pdf", width = 7.5, height = 5, bg = "transparent", device = cairo_pdf)
 ```
 
 ## supp fig 5
@@ -789,7 +794,7 @@ plot_selected_feature_long <- function(
   
   ## load
   selected_feature <- all_feature_sum %>%
-    filter(feature %in% selected , median_CI <= 1, rank <= rank_) %>%
+    filter(feature %in% selected , median_CR <= 1, rank <= rank_) %>%
     mutate(label = paste0(Combination, " [", rank, "]")) %>%
     arrange(-rank)
     
@@ -839,19 +844,21 @@ plot_selected_feature_long <- function(
 ```{r}
 ## "cyto"
 selected = c("CBFB-MYH11", "KMT2A_re", "MECOM_re", "PML-RARA", "RUNX1-RUNX1T1", "Other_re", "Other_abn", "Other_abn2")
-plot_selected_feature_long(selected, type = "category")
-ggsave("plot/suppfig5/supp_5c_cyto.png", dpi = 600, width = 5.5, height = 10)
+p <- plot_selected_feature_long(selected, type = "category") + theme_pdf
+ggsave(plot = p, "plot/suppfig5/supp_5c_cyto.png", dpi = 600, width = 5.5, height = 10, bg = "transparent")
+ggsave(plot = p, "plot/suppfig5/supp_5c_cyto.pdf", width = 5.5, height = 10, bg = "transparent", device = cairo_pdf)
 
 ## "other"
 selected = c("isMale", "ELN2022", "DiseaseStatus", "priorMDS")
-plot_selected_feature_long(selected, type = "category")
-ggsave("plot/suppfig5/supp_5d_other.png", dpi = 600, width = 5.5, height = 8)
+p <- plot_selected_feature_long(selected, type = "category") + theme_pdf
+ggsave(plot = p, "plot/suppfig5/supp_5d_other.png", dpi = 600, width = 5.5, height = 8, bg = "transparent")
+ggsave(plot = p, "plot/suppfig5/supp_5d_other.pdf", width = 5.5, height = 8, bg = "transparent", device = cairo_pdf)
 
 ## "mut"
 selected = c("IDH1", "SRSF2", "GATA2", "TET2", "IDH2", "KMT2A", "TP53")
-plot_selected_feature_long(selected, type = "category")
-ggsave("plot/suppfig5/supp_5b_mut.png", dpi = 600, width = 5.5, height = 10)
-
+p <- plot_selected_feature_long(selected, type = "category") + theme_pdf
+ggsave(plot = p, "plot/suppfig5/supp_5b_mut.png", dpi = 600, width = 5.5, height = 10)
+ggsave(plot = p, "plot/suppfig5/supp_5b_mut.pdf", width = 5.5, height = 10, bg = "transparent", device = cairo_pdf)
 
 # name = "marker"
 # selected = c("CD9", "CD38", "CD56", "CD4", "CD34")
@@ -936,12 +943,14 @@ hm_y <- Heatmap(t(Y_all), rect_gp = gpar(col = "black", lwd=0.0001),
 
 ht_list = hm_x1 %v% hm_x2 %v% hm_x3 %v% hm_x4 %v% hm_x5  
 
-png("plot/fig4/main_4a_catboost_schematic_feature.png", res=1000, width = 8, height = 8, units = "in")
-draw(ht_list, row_title = "Features (n=101)", row_title_gp = gpar(fontsize = 20))
+png("plot/fig4/main_4a_catboost_schematic_feature.png", res=600, width = 8, height = 8, units = "in", family = "Arial", bg = "transparent")
+# Cairo::CairoPDF("plot/fig4/main_4a_catboost_schematic_feature.pdf", width = 8, height = 8, bg = "transparent", family = "Arial")
+draw(ht_list, row_title = "Features (n=101)", row_title_gp = gpar(fontsize = 20), background = "transparent")
 dev.off()
 
-png("plot/fig4/main_4a_catboost_schematic_y.png", res=1000, width = 8, height = 4, units = "in")
-draw(hm_y, row_title = "Targets", row_title_gp = gpar(fontsize = 20))
+png("plot/fig4/main_4a_catboost_schematic_y.png", res=600, width = 8, height = 4, units = "in", family = "Arial", bg = "transparent")
+# Cairo::CairoPDF("plot/fig4/main_4a_catboost_schematic_y.pdf", width = 8, height = 4, bg = "transparent", family = "Arial")
+draw(hm_y, row_title = "Targets", row_title_gp = gpar(fontsize = 20), background = "transparent")
 
 
 ht_opt(RESET = TRUE)

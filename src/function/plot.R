@@ -7,7 +7,7 @@ require(RColorBrewer)
 require(patchwork)
 
 PvA_corr.plot <- function(
-    data, save = FALSE, 
+    data, save = NULL, 
     x = "Actual_s_dss", y = "Mean_Combo_s_dss",
     xlab = "Observed Mean Combo DSS", 
     ylab = "Predicted Mean Combo DSS",
@@ -30,15 +30,13 @@ PvA_corr.plot <- function(
               cor.coef = TRUE, cor.method = "spearman",
               xlab = xlab, ylab = ylab,
               color = color, 
-              size=size, alpha=0.7) + 
-    scale_size_continuous(range = c(2,7)) +
+              size = size, alpha=0.7) + 
+    scale_size_continuous(range = c(2,7), name = sizename) +
     scale_color_gradientn(colours = palette,
                           values = c(0, midpoint-0.1,midpoint+0.1, 1),
                           n.break = 5,
                           name = colorname) +
-    scale_size_continuous(name = sizename) +
-    xlim(xlim) +
-    ylim(ylim) 
+    xlim(xlim) + ylim(ylim)
   
   if (!is.na(label1)){
     p <- p + geom_text_repel(
@@ -46,9 +44,9 @@ PvA_corr.plot <- function(
       box.padding = unit(1.2, "lines"), size=text.size,
       point.padding = unit(0.5, "lines"),
       segment.color = "black", min.segment.length = 0.1,
-      force = 1, max.overlaps = 20, seed = 123) 
+      force = 1, max.overlaps = 20, seed = 123)
     }
-  
+
   if (!is.na(label2)){
     p <- p + geom_text_repel(
       data = data, aes(x = get(x), y = get(y), label = get(label2)),
@@ -56,11 +54,11 @@ PvA_corr.plot <- function(
       box.padding = unit(4, "lines"), size=text.size,
       point.padding = unit(0.5, "lines"),
       segment.color = "black", min.segment.length = 0.03,
-      force = 1, max.overlaps = 20, nudge_x = -0.4) 
+      force = 1, max.overlaps = 20, nudge_x = -0.4)
     }
-  
+
   p <- p +
-    theme_classic(base_size = 14)  + 
+    theme_classic(base_size = 14)  +
     theme(legend.position = "right",
           axis.line = element_line(colour = "black"),
           legend.title = element_text(size=12),
@@ -68,7 +66,7 @@ PvA_corr.plot <- function(
           aspect.ratio = 1
     )
   
-  if (save != FALSE){
+  if (!is.null(save)){
     ggsave(save, plot=p, units="cm", ...)
   }
   return (p)
@@ -93,22 +91,13 @@ plot_top_drugs <- function(data, top_n = 20, subtitle = "", title = "") {
     scale_y_discrete(expand = expansion(add = c(0, 0.5))) +
     scale_fill_manual(values = drugclass, name = "Drug Class") +
     labs(x = "Proportion (%) of the Top Predicted Combinations", y = "Top Drug Partners", title = title, subtitle = subtitle) +
-    # theme_grey(base_size = 14) +
-    theme_classic(base_size = 14) +
+    theme_pubr() +
     theme(
       aspect.ratio = 0.8,
       legend.position = c(.75, .25),
-      legend.text = element_text(size = 12),
-      legend.title = element_text(size = 12),
-      legend.key.height = unit(0.1, "cm"),
-      # panel.background = element_rect(fill = "white"),
-      panel.grid.major.x = element_line(color = "#A8BAC4", size = 0.3),
-      # axis.ticks.length = unit(0, "mm"),
-      # axis.title = element_blank(),
-      # axis.line.y.left = element_line(color = "black"),
-      axis.text = element_text(size = 14, color = "black"),
-      # plot.title = element_text(face = "bold", size = 14),
-      # plot.subtitle = element_text(size = 13)
+      legend.text = element_text(size = 11),
+      legend.key.height = unit(0.2, "cm"),
+      panel.grid.major.x = element_line(color = "#A8BAC4", size = 0.3)
     )
 }
 

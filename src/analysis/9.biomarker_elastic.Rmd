@@ -25,7 +25,6 @@ library(ggpubr)
 
 source("src/function/functions.R")
 source("src/function/loading_data.R")
-listofnames <- init_drugnames()
 ```
 
 # loading data
@@ -85,16 +84,15 @@ write.csv(df, "output/oshu_biomarkers.csv", row.names = F)
 # loading data for elastic net regression
 
 - concordantly regulated gene 261 -> good corr between rna and prot 258 -> hub genes + HVG 55
-- only focusing on the top combinations (with median CI < 1) - 78/89 
-- filtering genes first - removing any genes that are not correlated with drug response
-- none was removed 55
+- only focusing on the top combinations (with median CR < 1) - 78/89 
+
 ```{r}
 ## selected proteins: genes & proteins that are both upregulated in inflam clusters
 biomarker <- read.csv( "output/oshu_biomarkers.csv") 
 
 ## filtering genes correlated with top performing combination 
 topcombi <- read.csv("output/oshu_combinationindex.csv") %>% # (89)
-  filter(median_CI <= 1) %>%
+  filter(median_CR <= 1) %>%
   mutate(combo = Combination,
          Combination = gsub("[ -]", ".", Combination))  
 
@@ -233,7 +231,6 @@ ref="Azacitidine...Venetoclax"
 
 - Combination (n = 78)
   - 18 combinations with 0 coeff for genes
-  - 35/57 combinations with moderate fit (spearman > 0.5 & rsq > 0.1) remaining
   
 ```{r}
 # summarise
@@ -275,12 +272,17 @@ write.csv(coef_wide, "output/biomarkers_elasticnet_summary.csv", row.names = F)
 ```
 
 # plot
+- remember to load [loading data](#loading-data) and [loading data for elastic net regression](#loading-data-for-elastic-net-regression)
 
 filtering out models
 - 18/78 had no coeff
 - 20/78 failed evaluation
 - 40/78 passed
 ```{r}
+results <- readRDS("output/rds/biomarkers_elasticnet.rds")
+Y_all <- oshu@meta.data[, colnames(oshu@meta.data) %in% topcombi$Combination] # 78
+ref="Azacitidine...Venetoclax"
+
 perf_summary <- read.csv("output/supp/elasticnet_perf_summary.csv")
 coef_long <- read.csv("output/supp/biomarkers_elasticnet_long.csv")
 coef_wide <- read.csv("output/biomarkers_elasticnet_summary.csv")
@@ -311,11 +313,18 @@ PGLYRP1     CDA    ARG1  LGALS3  LILRA6    MMP8   C5AR1  CYP4F3    MGAM   S100P
      14      14      15      17      20 
 
 ```{r}
+## correlation with
+oshu <- readRDS("output/rds/oshu_seurat_obj.rds")
+df <- .run.cor(oshu@meta.data[,c(271:277,280)], oshu@meta.data[,78:270], method = "spearman", min.n = 5) %>%
+  mutate(Combination = listofnames[Combination])  %>%
+  filter(Combination %in% perf_summary_filt$combo,
+         Group == "inflammatory_sig_genes") %>%
+  select(Combination, cor) %>% column_to_rownames("Combination")
+
 coef_long <- coef_long %>%
   filter(combo %in% perf_summary_filt$combo)
 coef_wide <- reshape2::acast(coef_long, feature ~ combo, value.var = "coef", fill = 0)
 ```
-
 
 ```{r}
 mat <- coef_wide[rowSums(coef_wide) != 0, colSums(coef_wide) != 0 ]
@@ -323,18 +332,30 @@ mat <- mat[, colSums(mat != 0) %>% sort %>% names()]
 
 col_fun <- colorRamp2(c(0.50, 0.75, 1.00), brewer.pal(3, "YlGn"))
 
-png("plot/fig7/main_7e_elasticnet_hm.png", res=300, width = 0.15*nrow(mat) + 5, height = 0.15*ncol(mat) + 3, units = "in")
+row_ha = rowAnnotation(
+  "CorrCoeff w \nInflam sig" = df[colnames(coef_wide),], 
+  col=list(
+    "CorrCoeff w \nInflam sig" = colorRamp2(c(-0.7, 0, 0.7), c("#4d9220", "grey95", "#c5247d"))
+           ),
+  gp = gpar(col = "white", lwd=0.2) )
 
-Heatmap(t(mat), name = "ElasticNet\nCoeff", 
+hm <- Heatmap(t(mat), name = "ElasticNet\nCoeff", 
   rect_gp = gpar(col = "white", lwd=1), border = T,
+  right_annotation = row_ha,
+  row_split = df[colnames(coef_wide),] > 0,
   col = colorRamp2(c(-0.05, -0.025, -0.005, 0, 0.005, 0.025, 0.05), c("#2166AC", "#4393C3" , "#92C5DE", "grey95", "#F4A582", "#D6604D", "#B2182B")),
-  clustering_method_columns = "ward.D2", clustering_method_rows = "ward.D2",
+  clustering_distance_rows = "pearson",
   column_title = NULL, row_title = NULL,
   row_dend_reorder = T, column_dend_reorder = T,
   show_row_dend = T, show_column_dend = T,
   width = unit(0.15*nrow(mat), "in"), 
   height = unit(0.15*ncol(mat), "in")
 )
+
+png("plot/fig7/main_7e_elasticnet_hm.png", width = 0.15*nrow(mat) + 5, height = 0.15*ncol(mat) + 3, units = "in", res=600, family = "Arial", bg = "transparent")
+# Cairo::CairoPDF("plot/fig7/main_7e_elasticnet_hm.pdf", width = 0.15*nrow(mat) + 5, height = 0.15*ncol(mat) + 3, bg = "transparent", family = "Arial")
+
+ComplexHeatmap::draw(hm, merge_legends = T, background = "transparent")
 ```
 
 ## VenAza 
@@ -348,12 +369,13 @@ selected_coef <- selected$coefs %>% left_join(biomarker[4:5], by=c("feature"="ge
 ```{r}
 df <- data.frame("Observed_DSS" = selected$y_val, "Predicted_DSS" = selected$y_pred)
 
-ggscatter(df, x= "Observed_DSS", y="Predicted_DSS", 
+p <- ggscatter(df, x= "Observed_DSS", y="Predicted_DSS", 
           add = "reg.line", cor.coef = T, cor.method = "spearman",
           xlim = c(0,1), ylim = c(0,1)) +
-  theme(aspect.ratio = 1)
+  theme(aspect.ratio = 1) + theme_pdf
 
-ggsave("plot/suppfig9/suppfig_9a_elasticnet_venaza.png", dpi=600, width = 5, height = 5)  
+ggsave(plot = p, "plot/suppfig8/supp_8_elasticnet_venaza.png", dpi=600, width = 5, height = 5)  
+ggsave(plot = p, "plot/suppfig8/supp_8_elasticnet_venaza.pdf", width = 5, height = 5, bg = "transparent", device = cairo_pdf)
 ```
 
 ### suppfig 8b: correlation between selected biomarkers on proteomics levels
@@ -388,7 +410,7 @@ statstest <- statstest %>%
   ) 
 
 ## plot
-ggplot(df, aes(x=Relative_abundance, y=Observed_DSS, colour=cluster)) +
+p <- ggplot(df, aes(x=Relative_abundance, y=Observed_DSS, colour=cluster)) +
   geom_smooth(method = "lm", color = "grey30", se = F) +
   geom_point(size=2, alpha = .8) +
   scale_color_brewer(palette="Set1") +
@@ -398,9 +420,11 @@ ggplot(df, aes(x=Relative_abundance, y=Observed_DSS, colour=cluster)) +
   scale_x_continuous(expand = c(0.1, 0.1)) +
   facet_wrap(~Gene, ncol = 5, nrow = 3, scales = "free_x") +
   theme_classic() +
-  theme(aspect.ratio = 1.2, panel.border = element_rect(colour = "black", fill=NA, linewidth=1))
+  theme(aspect.ratio = 1.2, panel.border = element_rect(colour = "black", fill=NA, linewidth=1)) +
+  theme_pdf
 
-ggsave("plot/suppfig9/suppfig_9b_venaza_prot.png", width = 9, height = 6, dpi=600)
+ggsave(plot = p, "plot/suppfig8/supp_8b_venaza_prot.png", width = 9, height = 6, dpi=600)
+ggsave(plot = p, "plot/suppfig8/supp_8b_venaza_prot.pdf", width = 9, height = 6, bg = "transparent", device = cairo_pdf)
 ```
 
 ### fig 7b: clinical relevance - heatmap of gene expressions of biomarkers
@@ -433,13 +457,16 @@ clinc_df$Predicted_DSS <- temp$predicted_DSS
 mat <- t(clinc_df[1:nrow(selected_coef)])
 
 col_ha1 = columnAnnotation(
-  Clinical_Response = clinc_df$ResponseToVenAza, 
+  Response = clinc_df$ResponseToVenAza, 
   Predicted_DSS = clinc_df$Predicted_DSS,
   col=list(
-    Clinical_Response = c("Complete Response"= "seagreen", "Unknown" = "#984EA3", "Refractory" = "firebrick"),
+    Response = c("Complete Response"= "seagreen", "Unknown" = "#984EA3", "Refractory" = "firebrick"),
     Predicted_DSS = colorRamp2(c(0, 0.647, 1.00), c("#d73027", "#fee08b", "#1a9850"))
            ),
-  annotation_legend_param = list(Predicted_DSS = list(at=c(0, 0.647, 1), legend_height = unit(1.5, "cm"))),
+  annotation_legend_param = list(
+    Predicted_DSS = list(at=c(0, 0.647, 1), legend_height = unit(1.5, "cm")),
+    Response = list(labels=c("Yes", "No", "Unknown"))
+    ),
   gp = gpar(col = "white", lwd=0.2) )
 
 hm <- Heatmap(mat, 
@@ -448,13 +475,14 @@ hm <- Heatmap(mat,
     name = "scaled", heatmap_legend_param = list(legend_height = unit(1, "cm")),
     top_annotation = col_ha1)
 
-png(paste0("plot/fig8/main_8b_biomarkers_gene_exp.png"), units="cm", width=13, height=10, res=600)
-draw(hm, merge_legends = T)
+# png("plot/fig7/main_7g_biomarkers_gene_exp.png", width = 4.5, height = 4, units = "in", res=600, family = "Arial", bg = "transparent")
+Cairo::CairoPDF("plot/fig7/main_7g_biomarkers_gene_exp.pdf", width = 4.5, height = 4, bg = "transparent", family = "Arial")
+draw(hm, merge_legends = T, background = "transparent")
 
 ```
 
 # clinical relevance
-## ROC-AUC
+## suppfig 8c: ROC-AUC
 ```{r}
 library(pROC)
 df <- read.csv("data/all_clinical_response.csv", check.names = F)
@@ -462,17 +490,18 @@ x <- df
 
 roc1 <- roc(data=x, response="Clinical_Response", predictor="Actual", algorithm=1) # calculate sens, 1-spec, auc score
 
-png("plot/suppfig9/supp_9c_roc_clinical.png", width = 15, height = 12, units = "cm", res = 600)
+thres = coords(roc1, "best", ret = "threshold")[,1] # prints best DSS threshold = 0.647
+thres
+
+# png("plot/suppfig8/supp_8c_roc_clinical.png", width = 5.9, height = 4.7, units = "in", res = 600, family = "Arial", bg = "transparent")
+Cairo::CairoPDF("plot/suppfig8/supp_8c_roc_clinical.pdf", width = 5.9, height = 4.7, bg = "transparent", family = "Arial")
 par(pty = "s")
 plot.roc(roc1, main="ROC curve", legacy.axes=T, print.thres = T,
          print.auc=TRUE, col="black", asp=NA )
 dev.off()
-
-thres = coords(roc1, "best", ret = "threshold")[,1] # prints best DSS threshold = 0.647
-thres
 ```
 
-## confusion matrix
+## suppfig 8c: confusion matrix
 ```{r}
 x$Predict <- factor(ifelse(x$Actual > thres, 1, 0))
 x$Clinical_Response <- factor(ifelse(x$Clinical_Response == "Responder", 1, 0))
@@ -500,16 +529,18 @@ plotTable <- table %>%
   group_by(Actual) %>%
   mutate(prop = Freq/sum(Freq))
 
-ggplot(data = plotTable, mapping = aes(x = Prediction, y = Actual, fill = Freq)) +
+p <- ggplot(data = plotTable, mapping = aes(x = Prediction, y = Actual, fill = Freq)) +
   geom_tile() +
   scale_y_discrete(limits = c(0, 1)) + 
   scale_x_discrete(limits = c(1, 0)) + 
   geom_text(aes(label = Freq), vjust = .5, fontface  = "bold", alpha = 1, size=8) +
   scale_fill_gradient(low = "white", high = "#4682B0") +
   theme_void() +
-  theme(legend.position="none")
+  theme(legend.position="none") + theme_pdf
 
-ggsave("plot/suppfig9/supp_9c_confusionM_clinical.png", width = 10, height = 10, units = "cm", dpi = 600)
+
+ggsave(plot = p, "plot/suppfig8/supp_8c_confusionM_clinical.png", width = 4, height = 4, dpi=600)
+ggsave(plot = p, "plot/suppfig8/supp_8c_confusionM_clinical.pdf", width = 4, height = 4, bg = "transparent", device = cairo_pdf)
 ```
 
 ## boxplot
@@ -525,15 +556,17 @@ plot <- df %>%
   scale_shape_manual(values = c(21, 24), name="Dataset") +
   geom_hline(yintercept = thres, color="black", linetype="dashed") + 
   annotate("text", label = "0.647", 
-           x = 2.50, y = thres+0.02, colour = "black" ) + 
+           x = 2.45, y = thres+0.03, colour = "black" ) + 
   ylim(c(0,1)) +
   labs(x="Clinical Response", y="DSS") +
   theme_classic(base_size = 14) + 
-  theme(legend.position="top")
+  theme(legend.position="top", aspect.ratio = 1) +
+  theme_pdf
 
 plot
 
-ggsave(paste0("plot/fig8/main_8a_clinical_stats.png"), width = 12, height = 11, dpi=600, units = "cm")
+ggsave(plot = plot, "plot/fig7/main_7f_clinical_stats.png", width = 12, height = 11, dpi=600, units = "cm")
+ggsave(plot = plot, "plot/fig7/main_7f_clinical_stats.pdf", width = 12, height = 11, units = "cm", bg = "transparent", device = cairo_pdf)
 ```
 
 # sessioninfo

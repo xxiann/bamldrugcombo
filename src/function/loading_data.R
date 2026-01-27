@@ -10,3 +10,21 @@ init_drugnames <- function(){
   listofnames <- setNames(listofnames$Drug, listofnames$newname)
   return(listofnames)
 }
+
+listofnames <- init_drugnames()
+
+
+## saving pdf
+extrafont::loadfonts(device = "pdf", quiet = T)
+
+library(showtext)
+font_add("Arial", regular = "C:/Windows/Fonts/arial.ttf")
+# showtext_auto()
+# showtext_opts(dpi = 600)
+
+theme_pdf <- theme(
+  panel.background = element_rect(fill = "transparent", colour = NA), 
+  plot.background = element_rect(fill = "transparent", colour = NA),
+  legend.background = element_rect(fill = "transparent", colour = NA),
+  text = element_text(family = "Arial")
+)

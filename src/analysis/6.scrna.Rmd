@@ -53,6 +53,7 @@ library(ggpubr)
 library(rstatix)
 
 source("src/function/scrna_colour.R")
+source("src/function/loading_data.R")
 set.seed(10)
 
 set_alpha <- function(plot, alpha = 0.7){
@@ -73,7 +74,7 @@ reference <- read.csv("data/inflammatory_sig_246.csv")
 
 ## fig 6a: overall umap
 ```{r}
-DimPlot(all_, reduction = "umap", group.by="CellType", shape.by = "cell_status", 
+p <- DimPlot(all_, reduction = "umap", group.by="CellType", shape.by = "cell_status", 
         cols = hierarchy_colors, pt.size=.5, shuffle = T) %>%
   set_alpha() + 
   scale_shape_manual(values = c(17,16,15), name = NULL, 
@@ -82,9 +83,11 @@ DimPlot(all_, reduction = "umap", group.by="CellType", shape.by = "cell_status",
                                 "Healthy_normal\n(n=6,915)")) +
   theme(aspect.ratio = 1) + ggtitle("") + 
   guides(shape = guide_legend(override.aes = list(size = 3, alpha = 1)),
-         color = guide_legend(override.aes = list(size = 3, alpha = 1)) )
+         color = guide_legend(override.aes = list(size = 3, alpha = 1)) ) &
+  theme_pdf
 
-ggsave("plot/fig6/main_6a_umap_overall.png", width = 7.5, height = 6, dpi = 600)
+ggsave(plot = p,"plot/fig6/main_6a_umap_overall.png", width = 7.5, height = 6, dpi = 600, bg = "transparent")
+ggsave(plot = p,"plot/fig6/main_6a_umap_overall.pdf", width = 7.5, height = 6, bg = "transparent", device = cairo_pdf)
 ```
 
 ## suppfig 6a: seurat clusters + batch effects
@@ -92,11 +95,13 @@ ggsave("plot/fig6/main_6a_umap_overall.png", width = 7.5, height = 6, dpi = 600)
 ```{r}
 p <- DimPlot(all_, reduction = "umap", group.by = c("PatientID", "seurat_clusters")) + DimPlot(all_, reduction = "umap", group.by = c( "CellType"), cols =  hierarchy_colors, combine = F) 
 
-p %>%
+p <- p %>%
   set_alpha() & 
-  guides(color = guide_legend(override.aes = list(size = 3, alpha = 1)) )
+  guides(color = guide_legend(override.aes = list(size = 3, alpha = 1)) ) &
+  theme_pdf
 
-ggsave("plot/suppfig7/supp_7a_afterbc_all_2.png", width=20, height=5)
+ggsave(plot = p,"plot/suppfig7/supp_7a_afterbc_all_2.png", width=20, height=5, dpi = 600, bg = "transparent")
+ggsave(plot = p,"plot/suppfig7/supp_7a_afterbc_all_2.pdf", width=20, height=5, bg = "transparent", device = cairo_pdf)
 ```
 
 ## fig 6b: split by cell status (top)
@@ -114,9 +119,11 @@ p <- lapply(X = ob_list, FUN = function(x) {
       guides(color = guide_legend(override.aes = list(size = 3, alpha = 1)) )
 })
 
-p[[2]] + p[[1]] + p[[3]] + patchwork::plot_layout(ncol = 3, guides = "collect")
+p <- p[[2]] + p[[1]] + p[[3]] + patchwork::plot_layout(ncol = 3, guides = "collect") &
+  theme_pdf
 
-ggsave("plot/fig6/main_6b_umap_celltype.png", width = 15, height = 5, dpi = 600)
+ggsave(plot = p,"plot/fig6/main_6b_umap_celltype.png", width = 15, height = 5, dpi = 600)
+ggsave(plot = p,"plot/fig6/main_6b_umap_celltype.pdf", width = 15, height = 5, bg = "transparent", device = cairo_pdf)
 ```
 
 ## fig 6b: inflammation (middle)
@@ -133,27 +140,28 @@ p <- FeaturePlot(all_, reduction = "umap",
         axis.title.y.right = element_blank()
         ) 
 
-p + theme(legend.position = "right")
+p <- p + theme(legend.position = "right") & theme_pdf
 
-ggsave("plot/fig6/main_6b_dimplot_infl.png", width = 14, height = 5, dpi = 600)
-
+ggsave(plot = p,"plot/fig6/main_6b_dimplot_infl.png", width = 14, height = 5, dpi = 600)
+ggsave(plot = p,"plot/fig6/main_6b_dimplot_infl.pdf", width = 14, height = 5, bg = "transparent", device = cairo_pdf)
 ```
 
 ## fig 6b: boxplot of inflammation scores per cell per cell type (bottom)
 
 ```{r}
 df <- FetchData(all_, vars = c("cell_status", "celltype", "CellType", "Inflammation"))
-ggplot(df, aes(x = celltype, y = Inflammation, fill = CellType)) +
+p <- ggplot(df, aes(x = celltype, y = Inflammation, fill = CellType)) +
   geom_boxplot() +
   scale_fill_manual(values = hierarchy_colors, guide = "none") +
   theme_classic(base_size = 12) +
   labs(x="", y="Inflammatory Score")+
   facet_grid(~cell_status, drop = T, axes = "all") +
   theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
-        aspect.ratio = 0.5)
+        aspect.ratio = 0.5) +
+  theme_pdf
 
-ggsave("plot/fig6/main_6b_boxplot_infl.png", width = 12, height = 3, dpi = 600)
-
+ggsave(plot = p,"plot/fig6/main_6b_boxplot_infl.png", width = 12, height = 3, dpi = 600)
+ggsave(plot = p,"plot/fig6/main_6b_boxplot_infl.pdf", width = 12, height = 3, bg = "transparent", device = cairo_pdf)
 ```
 
 ## difference between patients
@@ -178,7 +186,7 @@ write.csv(df, "output/supp/scrna/scrna_cell_dist_per_sampleid.csv", row.names = 
 
 ```
 
-## fig 6c: cell distribution bar plot
+## suppfig 6b: cell distribution bar plot
 
 ```{r}
 patient_order <- read.csv("data/scrna/vangalen_sampleinfo.csv") %>%
@@ -206,7 +214,7 @@ df_1 <- df %>%
   arrange(PercentDist) %>%
   mutate(SampleID = factor(SampleID, levels = patient_order$SampleID))
 
-df_1 %>%
+p <- df_1 %>%
   mutate(category = factor(category, levels = c("primitive", "GMP", "mature", "lymphoid", "erythroid", "pDC"))
          ) %>%
 ggplot(. , aes(x = cell_status, y = PercentDist, fill = category)) +
@@ -232,12 +240,14 @@ ggplot(. , aes(x = cell_status, y = PercentDist, fill = category)) +
   theme_classic() +
   theme(axis.text.x = element_blank(), axis.ticks.x = element_blank(), 
         legend.key.size = unit(0.3, "cm"), aspect.ratio = 2.5, 
-        legend.position = "bottom", legend.direction = "vertical")
+        legend.position = "bottom", legend.direction = "vertical") +
+  theme_pdf
 
-ggsave(paste0("plot/fig6/main_6c_cellpop_D0.png"), width = 7, height = 6, dpi = 600)
+ggsave(plot = p,"plot/suppfig7/supp_7b_cellpop_D0.png", width = 7, height = 6, dpi = 600)
+ggsave(plot = p,"plot/suppfig7/supp_7b_cellpop_D0.pdf", width = 7, height = 6, bg = "transparent", device = cairo_pdf)
 ```
 
-## fig 6d/suppfig 6b: inter-patient heterogenenity
+## suppfig 6c/d: inter-patient heterogenenity
 ```{r}
 temp <- all_@meta.data %>%
   select(SampleID := orig.ident, PatientID, CellType, cell_status, Inflammation) %>%
@@ -248,7 +258,7 @@ temp <- all_@meta.data %>%
   filter(Day == "0") %>%
   inner_join(., df_1)
   
-temp %>%
+p <- temp %>%
   # filter(category %in% c("primitive", "GMP", "mature")) %>% # main fig
   filter(!category %in% c("primitive", "GMP", "mature")) %>% # supp fig
   mutate(category = factor(category, levels = c("primitive", "GMP", "mature", "lymphoid", "erythroid", "pDC")),
@@ -263,10 +273,14 @@ ggplot(., aes(x = PercentDist, y = Inflammation)) +
   labs(x="Percent Distribution (%)", y = "Mean Inflammatory Score") +
   facet_grid(category~cell_status, drop = T, axes = "all") +
   theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
-        aspect.ratio = 0.5, legend.key.size = unit(0.3, "cm"))
+        aspect.ratio = 0.5, legend.key.size = unit(0.3, "cm")) +
+  theme_pdf
 
-# ggsave(paste0("plot/fig6/main_6d_cellpop_inflam_main.png"), width = 7, height = 6, dpi = 600)
-ggsave(paste0("plot/suppfig7/supp_7b_cellpop_inflam_supp.png"), width = 4.5, height = 6, dpi = 600)
+# ggsave(plot = p,"plot/suppfig7/supp_7c_cellpop_inflam_main.png", width = 7, height = 6, dpi = 600)
+# ggsave(plot = p,"plot/suppfig7/supp_7c_cellpop_inflam_main.pdf", width = 7, height = 6, bg = "transparent", device = cairo_pdf)
+
+ggsave(plot = p,"plot/suppfig7/supp_7d_cellpop_inflam_supp.png", width = 4.5, height = 6, dpi = 600)
+ggsave(plot = p,"plot/suppfig7/supp_7d_cellpop_inflam_supp.pdf", width = 4.5, height = 6, bg = "transparent", device = cairo_pdf)
 ```
 
 # DEG: Differential between malignant and normal
@@ -438,6 +452,7 @@ patternRes <- read.csv("output/supp/scrna/selected_patterntest.csv")
 ```
 
 ## tbl 19: overlapping DEG and pseudotime outcomes
+- filters at least one comparison has p_adj < 0.05, lfc = 0.58
 ```{r}
 # 1) Read DEG table + add significance flag
 read_deg <- function(path, p_adj = 0.05, lfc = 0.58) {
@@ -571,7 +586,7 @@ write.csv(df_differentiation_1, paste0("output/scrna_deg_all.csv"), row.names = 
 ```
 
 ## plot
-## fig 6e: overall UMAP + pseudotime curves
+## fig 6c: overall UMAP + pseudotime curves
 ```{r}
 p <- DimPlot(object = all_selected, reduction = "umap", pt.size=.3, label = T) %>%
   set_alpha() + theme(aspect.ratio = 1, legend.position = "none")
@@ -600,12 +615,13 @@ r <- FeaturePlot(object = all_selected, reduction = "umap", features = "pseudoti
   geom_path(data=mst %>% arrange(Order), aes(x=umap_1, y=umap_2, group=Lineage), lwd = 1) +
   ggrepel::geom_text_repel(data=labelling, aes(x=umap_1, y=umap_2, label=cluster_name), bg.colour = "white",  bg.r = 0.15, max.overlaps = Inf, nudge_x = -1.5)
   
-p+q+r 
+p <- p+q+r & theme_pdf
 
-ggsave("plot/fig6/main_6e_selected_umap.png", dpi = 600, units = "in", width = 15, height = 4)
+ggsave(plot = p, "plot/fig6/main_6c_selected_umap.png", dpi = 600, units = "in", width = 15, height = 4)
+ggsave(plot = p, "plot/fig6/main_6c_selected_umap.pdf", units = "in", width = 15, height = 4, bg = "transparent", device = cairo_pdf)
 ```
 
-## fig 6e: transition of cell types along the lineage pseudotime
+## fig 6c: transition of cell types along the lineage pseudotime
 
 ```{r}
 pseudotime_df <- slingPseudotime(sds)
@@ -621,20 +637,26 @@ temp <- df %>%
          cell_status = factor(cell_status, levels = c("Healthy_normal", "AML_nonmalignant", "AML_malignant"))
          )
 
-ggplot(temp, aes(x=pseudotime, y=cell_status, color=CellType, fill=CellType)) +
+p <- ggplot(temp, aes(x=pseudotime, y=cell_status, color=CellType, fill=CellType)) +
   geom_tile(alpha=0.5) +
   scale_color_manual(values = hierarchy_colors, guide = "none") +
   scale_fill_manual(values = hierarchy_colors) +
   facet_grid(Lineage ~ ., drop = T, scales = "free_y", axes = "all") +
   labs(y = "") +
   theme_classic() +
-  theme(aspect.ratio = 0.1, strip.text.y = element_text(angle = 0), legend.key.size = unit(0.2, "cm"), text = element_text(size = 20)) + 
-  guides(fill = guide_legend(ncol = 2, override.aes = list(alpha = 1))) 
+  theme(aspect.ratio = 0.1, strip.text.y = element_text(angle = 0), 
+        legend.key.size = unit(0.2, "cm"), 
+        text = element_text(size = 20, colour = "black"),
+        axis.text = element_text(colour = "black")
+        ) + 
+  guides(fill = guide_legend(ncol = 2, override.aes = list(alpha = 1))) +
+  theme_pdf
 
-ggsave("plot/fig6/main_6e_pseudotime_celltype.png", width = 12, height = 4, dpi = 600)
+ggsave(plot = p,"plot/fig6/main_6c_pseudotime_celltype.png", width = 12, height = 4, dpi = 600)
+ggsave(plot = p,"plot/fig6/main_6c_pseudotime_celltype.pdf", width = 12, height = 4, bg = "transparent", device = cairo_pdf)
 ```
 
-## fig 6f/suppfig 7c: transition of genes/signature along the pseudotime
+## fig 6d/suppfig 7e: transition of genes/signature along the pseudotime
 
 - refer to function like plotSmoothers and GeneTrendCurve.Slingshot
 ```{r}
@@ -688,7 +710,9 @@ for (i in df_differentiation_1$X[df_differentiation_1$is_inflam]) {
 
 - 43/61 was selected for association with immune/myeloid/aml related genes
 - plotting only cdc and mono lineage; keeping gmp as supplement
+
 ```{r}
+grid::gpar(fontfamily = "sans")
 ## heatmap
 selected_gene <- list(
   "mature\nmyeloid" = c("CD14", "CD36", "CX3CR1", "MAFB", "MNDA", "FCGR3A", "FCN1",
@@ -711,7 +735,7 @@ pseudotime_df <- slingPseudotime(sds) %>%
   as.data.frame()
 colnames(pseudotime_df ) <- lineage_level
 
-df <- FetchData(object = all_selected, vars = c(selected_gene$gene, "CellType", "celltype","cell_status"), clean = "none", layer = "scale.data") 
+df <- FetchData(object = all_selected, vars = c(selected_gene$gene, "CellType", "celltype","cell_status"), clean = "none", slot = "scale.data") 
 
 n = 1
 df_1 <- df
@@ -771,14 +795,46 @@ hm2 <- Heatmap(
   name = "scaled", use_raster = T, raster_device = "png", raster_quality = 3,
   heatmap_legend_param = list(border = "black", labels_gp = gpar(fontsize = 10))
 )
+
+png("plot/fig6/main_6d_hm_lineage_1_2.png", width = 9.5, height = 7.5, units = "in", res = 600, bg="transparent", family = "Arial")
+# Cairo::CairoPDF("plot/fig6/main_6d_hm_lineage_1_2.pdf", width = 9.5, height = 7.5, bg="transparent", family = "Arial")
+ComplexHeatmap::draw(hm2 + hm1, auto_adjust = F, ht_gap = unit(-1,"mm"), merge_legends = T, background = "transparent")
 ```
 
-```{r}
-png("plot/fig6/main_6e_hm_lineage_1_2.png", width = 9.5, height = 7.5, units = "in", res = 600)
-draw(hm2 + hm1, auto_adjust = F, ht_gap = unit(-1, "mm"), merge_legends = T)
 
-# png("plot/suppfig7/supp_7c_hm_lineage_3.png", width = 7, height = 7.5, units = "in", res = 600)
-# draw(hm2, merge_legends = T)
+```{r}
+n = 3 # change to 3 for supp figure
+df_1 <- df
+df_1$Lineage <- pseudotime_df[,n]
+df_1 <- df_1 %>% filter(!is.na(Lineage)) %>% arrange(Lineage)
+
+ha1 <- columnAnnotation(
+  cell_status = df_1$cell_status,
+  celltype = df_1$CellType,
+  col = list(
+    cell_status = color_celltype,
+    celltype = hierarchy_colors[c(1,2,5:16)]
+  ),
+  show_annotation_name = T
+)
+
+mat <- df_1[,selected_gene$gene] %>% as.matrix() %>% t()
+
+hm2 <- Heatmap(
+  mat, top_annotation = ha1, col = col_fun, border_gp = gpar(col = "grey30"),
+  show_row_dend = F, show_column_dend = F,
+  show_column_names = F, cluster_columns = F, 
+  cluster_rows = T, clustering_distance_rows = "euclidean", 
+  column_split = df_1$cell_status, column_title = lineage_level[n],
+  row_split = selected_gene$category, row_title_rot = 0, row_title_gp = gpar(fontsize = 11), 
+  cluster_row_slices = F, row_names_centered = F,
+  name = "scaled", use_raster = T, raster_device = "png", raster_quality = 3,
+  heatmap_legend_param = list(border = "black", labels_gp = gpar(fontsize = 10))
+)
+
+# png("plot/suppfig7/supp_7e_hm_lineage_3.png", width = 7, height = 7.5, units = "in", res = 600, bg="transparent")
+Cairo::CairoPDF("plot/suppfig7/supp_7e_hm_lineage_3.pdf", width = 7, height = 7.5, bg="transparent", family = "Arial")
+ComplexHeatmap::draw(hm2, merge_legends = T, background = "transparent")
 ```
 
 # session info

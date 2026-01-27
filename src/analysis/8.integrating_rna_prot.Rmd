@@ -19,6 +19,7 @@ library(tidyverse)
 library(ROTS)
 
 library(ComplexHeatmap)
+source("src/function/loading_data.R")
 ```
 
 # integrating RNA and proteomics
@@ -212,8 +213,15 @@ write.csv(data, "output/oshu_rna_prot_overlap.csv", row.names = F, fileEncoding 
 
 ## fig 7d: integrating rna and protein
 ```{r}
+show <- c("SAMHD1", "NCF2", "CKAP4", "POU2F2", "CTSH", "KCTD12", "LRRC25", "CD14", "LILRA6")
+```
+
+
+```{r}
 data <- read.csv("output/oshu_rna_prot_overlap.csv") %>%
-  mutate(label2 = ifelse(sig_corr_dss & category_no == "C7", Gene, ifelse(in_inflam & category_no == "C3", Gene, NA)) )
+  mutate(label2 = ifelse(sig_corr_dss & category_no == "C7", Gene, 
+                         ifelse(((in_inflam & logfc_rna>2.1) | (Gene %in% show)) & category_no == "C3", Gene, NA)) ) %>%
+  arrange(label2)
 
 labels_ <- data[,c(10,12,11)] %>% 
   unique() %>% 
@@ -232,14 +240,15 @@ table(data$category_no)
 colors <- c("#377EB8","#984EA3","#E41A1C","grey","#4DAF4A","#A65628","gold","darksalmon", "#FF7F00")
 
 # Plot
-ggplot(data, aes(x = logfc_prot, y = logfc_rna, colour = category_name, label= label2)) +
+p <- ggplot(data, aes(x = logfc_prot, y = logfc_rna, colour = category_name, label= label2)) +
   geom_point(size = 2, alpha=.7) +
   scale_color_manual(values = colors, name = "Category") +
-  geom_hline(yintercept = c(-1,1), linetype = "dashed", color = "gray30") +
-  geom_vline(xintercept = c(-0.58,0.58), linetype = "dashed", color = "gray30") +
+  geom_hline(yintercept = c(-1,1), linetype = "dashed", color = "gray70") +
+  geom_vline(xintercept = c(-0.58,0.58), linetype = "dashed", color = "gray70") +
   xlim(c(-2.1,2.2)) + ylim(c(-5,5)) +
   stat_cor(mapping = aes(x = logfc_prot, y = logfc_rna), method = "spearman", inherit.aes = F, label.y = -4) +
-  geom_text_repel(min.segment.length = 0, box.padding=.5,color="black", size=3, max.overlaps = 30, force = 0.5) +
+  geom_text_repel(min.segment.length = 0, box.padding=.5,color="black", 
+                  size=3, max.overlaps = 30, force = 0.6) +
   labs(
     x = "Log2 Fold Change of Protein",
     y = "Log2 Fold Change of RNA"
@@ -252,9 +261,11 @@ ggplot(data, aes(x = logfc_prot, y = logfc_rna, colour = category_name, label= l
     panel.border = element_rect(fill=NA, color = "black", linewidth = 1)
   ) +
   geom_text(data=labels_[c(3,7), ], mapping=aes(x,y,label=label), color="gray40") +
-  guides(color = guide_legend(override.aes = list(size=3, alpha=1) ) ) 
+  guides(color = guide_legend(override.aes = list(size=3, alpha=1) ) ) +
+  theme_pdf
 
-ggsave("plot/fig7/main_fig7d.png", width = 7, height = 5, dpi = 600)
+ggsave(plot = p, "plot/fig7/main_7d_scatterplot_protrna.png", width = 7, height = 5, dpi = 600)
+ggsave(plot = p, "plot/fig7/main_7d_scatterplot_protrna.pdf", width = 7, height = 5, bg = "transparent", device = cairo_pdf)
 ```
 
 

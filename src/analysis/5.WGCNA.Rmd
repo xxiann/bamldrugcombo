@@ -28,7 +28,6 @@ set.seed(10)
 source("src/function/functions.R")
 source("src/function/colour.R")
 source("src/function/loading_data.R")
-listofnames <- init_drugnames()
 ```
 
 # loading data
@@ -238,8 +237,9 @@ hm <- Heatmap(moduleTraitCor,
   height = unit(0.5*nrow(moduleTraitCor), "in")
 )
 
-png("plot/suppfig6/supp_6e.png", width = (0.7*ncol(moduleTraitCor)) + 4, height = (0.5*nrow(moduleTraitCor)) + 5, units = "in", res=400)
-draw(hm)
+# png("plot/suppfig6/supp_6e_hm_wgcna_cell.png", width = (0.7*ncol(moduleTraitCor)) + 3, height = (0.5*nrow(moduleTraitCor)) + 4, units = "in", res=600, bg = "transparent")
+Cairo::CairoPDF("plot/suppfig6/supp_6e_hm_wgcna_cell.pdf", width = (0.7*ncol(moduleTraitCor)) + 3, height = (0.5*nrow(moduleTraitCor)) + 4, bg = "transparent", family = "Arial")
+ComplexHeatmap::draw(hm, background = "transparent")
 ```
 
 ## tbl 17: annotating with pathways 
@@ -280,15 +280,16 @@ p <- cnetplot(formula_hall, node_label = "all", layout = "fr",
          cex.params=list(category_node=3, gene_node=5, category_label=2, gene_label=1.5),
          seed = 1
          ) + scale_fill_manual(values=col2, name="Module") +
-  theme(legend.key.size = unit(0.5, "cm"), legend.text = element_text(size=14))
+  theme(legend.key.size = unit(0.5, "cm"), legend.text = element_text(size=14)) 
 
 
 ## annotates specific names only
 p[["layers"]][[8]][["data"]] <- p[["layers"]][[8]][["data"]] %>%
   mutate(name = ifelse(name %in% reference$gene_id, name, ""))
-p
+p <- p + theme_pdf
 
-ggsave("plot/suppfig6/supp_6f.png", width = 15, height = 12, units = "in", dpi = 600)
+ggsave(plot = p, "plot/suppfig6/supp_6f_cnetplot.png", width = 15, height = 12, units = "in", dpi = 600, bg = "transparent")
+ggsave(plot = p, "plot/suppfig6/supp_6f_cnetplot.pdf", width = 15, height = 12, units = "in", bg = "transparent", device = cairo_pdf)
 ```
 
 ## fig 5e: plotting module summary
@@ -334,8 +335,7 @@ row_ha <- rowAnnotation(
   show_legend=F, show_annotation_name = F
 )
 
-png("plot/fig5/main_5e.png", width = 15, height = 6, units = "in", res = 600)
-Heatmap(MEs, border = T,border_gp = gpar(col = "black", lwd=2),
+hm <- Heatmap(MEs, border = T,border_gp = gpar(col = "black", lwd=2),
         col = circlize::colorRamp2(seq(-0.15, 0.15, length = 11), rev(RColorBrewer::brewer.pal(11, "RdYlBu"))),
         show_row_names = T, show_column_names = F, row_names_side = "right",
         
@@ -353,6 +353,10 @@ Heatmap(MEs, border = T,border_gp = gpar(col = "black", lwd=2),
         name = "ME",
         width = unit(22, "cm"), height = unit(8, "cm")
         )
+
+# png("plot/fig5/main_5e_hm_wgcna.png", width = 15, height = 5, units = "in", res = 600, bg = "transparent", family = "Arial")
+Cairo::CairoPDF("plot/fig5/main_5e_hm_wgcna.pdf", width = 15, height = 5, bg = "transparent", family = "Arial")
+ComplexHeatmap::draw(hm, background = "transparent")
 ```
 
 # session info

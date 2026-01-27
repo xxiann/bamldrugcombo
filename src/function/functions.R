@@ -16,10 +16,10 @@ annotate_drug_classes <- function(dataset, drug_detail, match_col) {
   drug_class_pairs <- combined %>%
     transmute(
       Drug_Class1, Drug_Class2,
-      Label = paste(pmin(Drug_Class1, Drug_Class2), "-", pmax(Drug_Class1, Drug_Class2))
+      Label = paste(pmin(Drug_Class1, Drug_Class2), "-", pmax(Drug_Class1, Drug_Class2)) # change name
     )
   
-  drug_class_counts <- count(drug_class_pairs, Label, name = "Count") %>%
+  drug_class_counts <- dplyr::count(drug_class_pairs, Label, name = "Count") %>%
     arrange(desc(Count))
   
   list(combined, drug_class_counts, drug_class_pairs)
