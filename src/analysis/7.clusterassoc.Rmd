@@ -1,0 +1,457 @@
+---
+title: "cluster characterisation (features & combinations)"
+date: "14 jan 26"
+output: 
+  html_notebook:
+    theme: united
+    toc: yes
+    toc_float: yes
+---
+
+# Loading libraries
+```{r librariesAnalysis, echo=TRUE, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(Seurat)
+library(matrixStats)
+library(fastDummies)
+
+library(ComplexHeatmap)
+library(circlize)
+library(dendsort)
+
+library(data.table)
+library(rstatix)
+
+set.seed(10)
+
+source("src/function/colour.R")
+source("src/function/plot.R")
+source("src/function/functions.R")
+color_list <- ggplotColours(n=6)
+
+source("src/function/loading_data.R")
+```
+
+# loading data
+```{r}
+oshu <- readRDS("output/rds/oshu_seurat_obj.rds")
+sampleinfo <- read.csv("data/oshu/rnaseq_sampleinfo.csv", check.names = F)
+```
+
+
+# tbl 13: cluster-feature association
+
+```{r}
+sampleinfo2 <- sampleinfo %>%
+  select(1,3,4,10:13, 33:74) %>%
+  mutate(cluster = oshu$seurat_clusters,
+         Age_Cat = cut(Age, labels=c("young", "middle", "older", "oldest"), 
+                       breaks=c(-1, 21, 60, 75, 100)),
+         FAB_subtype= ifelse(FAB_subtype=="",NA,ifelse(FAB_subtype=="M0/M1", "M1", FAB_subtype))
+         ) %>%
+  select(-Age) %>%
+  select(Sample_ID, sampleid, cluster, everything())
+
+cyto <- read.csv("data/oshu/clinical_cyto.csv", check.names = F) %>% 
+  filter(Sample_ID %in% sampleinfo$sampleid) %>%
+  dplyr::rename(sampleid=Sample_ID) %>%
+  dplyr::select(1,6:17)
+
+sampleinfo2 <- left_join(sampleinfo2, cyto)
+```
+
+## fisher test
+- categorical
+- keeping only significant associations
+  - p adj < 0.05
+  - estimate = odds ratio > 1 = positive association of TRUE/feature with cluster (Odd ratio of TRUE divided by FALSE)
+```{r}
+## post hoc
+sampleinfo2 <- sampleinfo2 %>%
+  dummy_cols(select_columns = c("FAB_subtype", "Disease.status", "ELN2022", "specimenType", "Age_Cat"), ignore_na = T, remove_selected_columns = T)
+
+# dummy cluster
+dummycluster <- sampleinfo2["cluster"] %>%
+  dummy_cols(select_columns = "cluster", ignore_na = T, remove_selected_columns = T) 
+
+options(expressions = 500000) 
+res <- lapply(colnames(sampleinfo2)[4:ncol(sampleinfo2)], function(var) {
+  
+  res1 <- lapply(colnames(dummycluster), function(cluster) {
+    ## crossing each cluster with each variable, compares each cluster with the rest
+    table_data <- table(dummycluster[[cluster]], sampleinfo2[[var]])
+    test_result <- fisher_test(table_data, simulate.p.value = TRUE, B = 1e5, detailed = T)
+    return(test_result)
+  })
+  names(res1) <- colnames(dummycluster)
+  res1 <- data.table::rbindlist(res1, idcol = "cluster")
+  
+  return(res1)
+})
+names(res) <- colnames(sampleinfo2)[4:ncol(sampleinfo2)]
+
+res2 <- data.table::rbindlist(res, idcol = "variable", fill = T) %>%
+  adjust_pvalue(p.col="p", output.col="p.adj", method="fdr") %>%
+  add_significance(p.col="p.adj", output.col="p.adj.signif") 
+
+x <- res2 %>%
+  filter(p.adj.signif != "ns",
+         estimate > 1) %>% 
+  arrange(cluster, -estimate)
+
+write.csv(x, "output/oshu_feature_cluster_fisher.csv", row.names = F)
+```
+
+
+## spearman
+- numerical factor
+- keeping only significant associations
+  - p adj < 0.05
+```{r}
+cluster <- read.csv("output/oshu_rnaseq_sampleinfo.csv", check.names = F) %>%
+  select(1,2, 11:18, 34:41) %>%
+  pivot_longer(cols = 3:18, names_to = "variable",  values_to = "value", values_transform = list(value = as.numeric)) %>%
+  filter(!is.na(value)) 
+
+pwc <-  cluster %>%
+  group_by(variable) %>%
+  wilcox_test(value~seurat_clusters, detailed = T, p.adjust.method = "fdr", ref.group = "all") %>%
+  add_significance(p.col="p", output.col="p.signif") 
+
+pwc <-  cluster %>%
+  group_by(variable) %>%
+  wilcox_effsize(value~seurat_clusters, ref.group = "all") %>%
+  left_join(pwc, ., by=c("variable", ".y.", "group1", "group2", "n1", "n2"))
+
+x <- pwc %>%
+  filter(p.adj.signif != "ns") %>% 
+  arrange(variable, -estimate)
+
+write.csv(x, "output/oshu_feature_cluster_pwc.csv", row.names = F)
+```
+
+# tbl 20: statistical testing - drug response pattern between clusters 
+
+```{r}
+drug_resp <- oshu@meta.data [,c(279, 78:270)]
+colnames(drug_resp)<- c("cluster", listofnames[colnames(drug_resp)[-1] ])
+
+## overall median drug response
+drug_resp_med <- matrix(
+  matrixStats::colMedians(as.matrix(drug_resp[, -1]), na.rm = TRUE),
+  dimnames = list(colnames(drug_resp[, -1]), NULL)
+)
+
+## cluster-wise median drug response
+drug_resp_med_og <- drug_resp %>%
+  reframe(across(everything(), ~ median(.x, na.rm = TRUE)), .by = cluster) %>%
+  arrange(cluster) %>%
+  column_to_rownames("cluster") %>%
+  replace(is.na(.), NaN) %>%
+  t()
+
+## drug response long
+drug_resp <- drug_resp %>%
+  pivot_longer(2:194, names_to = "Combination", values_to = "DSS") %>%
+  filter(!is.na(DSS)) %>%
+  mutate(cluster = factor(as.character(cluster), levels=c("1", "2", "3", "4", "5", "6")) )
+```
+
+## tbl 20a: KW
+
+```{r}
+## kw test: multiple group comparison
+kw_res <- drug_resp %>%
+  group_by(Combination) %>%
+  kruskal_test(DSS~cluster) %>%
+  add_significance(p.col="p", output.col="p.signif") 
+
+kw_res <- drug_resp %>%
+  group_by(Combination) %>%
+  kruskal_effsize(DSS~cluster) %>%
+  left_join(kw_res, ., by=c("Combination", ".y.", "n")) %>%
+  mutate(type = ifelse(grepl(" - ", Combination), "drug combination", "monotherapy")) %>%
+  arrange(type, p, magnitude, Combination)
+
+write.csv(kw_res, "output/oshu_drug_cluster_kw.csv", row.names = F)
+```
+
+## tbl 20b: posthoc wilcox - cluster
+- only significant associations were included in the supp table (p.adj.signif != "ns")
+```{r}
+## post hoc wilcox tests: one vs all
+significant_drug <- unique(kw_res$Combination[kw_res$p.signif!="ns"])
+
+pwc <-  drug_resp %>%
+  filter(Combination %in% significant_drug) %>%
+  group_by(Combination) %>%
+  wilcox_test(DSS~cluster, detailed = T, p.adjust.method = "fdr", ref.group = "all") %>%
+  add_significance(p.col="p", output.col="p.signif") 
+
+pwc <-  drug_resp %>%
+  filter(Combination %in% significant_drug ) %>%
+  group_by(Combination) %>%
+  wilcox_effsize(DSS~cluster, ref.group = "all") %>%
+  left_join(pwc, ., by=c("Combination", ".y.", "group1", "group2", "n1", "n2")) %>%
+  mutate(type = ifelse(grepl(" - ", Combination), "drug combination", "monotherapy"))  %>%
+  arrange(p.adj.signif == "ns", type, Combination, group2)
+
+pwc$overall_medianDSS = drug_resp_med[pwc$Combination,]
+pwc$group_medianDSS <- apply(pwc, 1, function(row) {
+  drug_resp_med_og[row["Combination"], row["group2"]]
+})
+
+write.csv(pwc, "output/oshu_drug_cluster_posthoc_pwc_ref.csv", row.names = F)
+```
+
+
+## tbl 20b: posthoc wilcox - inflam high vs low
+- only significant associations were included in the supp table (p.signif != "ns")
+```{r}
+res <- drug_resp %>%
+  mutate(group = ifelse(cluster %in% c("1", "3", "5"), "inflam_low", "inflam_high") ) %>%
+  group_by(Combination) %>%
+  wilcox_test(DSS~group, detailed = T) %>%
+  add_significance(p.col="p", output.col="p.signif") 
+
+res <- drug_resp %>%
+  mutate(group = ifelse(cluster %in% c("1", "3", "5"), "inflam_low", "inflam_high") ) %>%
+  group_by(Combination) %>%
+  wilcox_effsize(DSS~group) %>%
+  left_join(res, ., by=c("Combination", ".y.", "group1", "group2", "n1", "n2")) %>%
+  mutate(type = ifelse(grepl(" - ", Combination), "drug combination", "monotherapy")) %>%
+  arrange(p.signif == "ns", type, -effsize)
+
+
+temp <- sampleinfo[,75:267] %>%
+  mutate(group = factor(as.character(oshu@meta.data$seurat_clusters), levels=c("1", "2", "3", "4", "5", "6")) ,
+         group = ifelse(group %in% c("1", "3", "5"), "medianDSS_inflam_low", "medianDSS_inflam_high")) %>%
+  reframe(across(all_of(everything()), ~ median(.x, na.rm = TRUE)), .by = group) %>%
+  arrange(group) %>%
+  column_to_rownames("group") %>%
+  select(res$Combination) %>%
+  t()
+
+res <- cbind(res, temp) 
+
+write.csv(res, "output/oshu_drug_cluster_wilcox_inflam.csv", row.names = F)
+```
+
+
+# tbl 21: genesig-drugresp correlation
+
+```{r}
+df <- .run.cor(oshu@meta.data[,c(271:277,280)], oshu@meta.data[,78:270], method = "spearman", min.n = 30) %>%
+  mutate(Combination = listofnames[Combination])
+
+sig.cor <-  df %>%
+  filter(p.adj.signif != "ns", Group == "inflammatory_sig_genes") %>%
+  group_by(Combination) %>%
+  summarise(max_cor=max(abs(cor))) %>% filter(max_cor>=0.3)
+
+x <- df %>%
+  mutate(sig_inflam = Combination %in% sig.cor$Combination,
+         type = ifelse(grepl(" - ", Combination), "drug combination", "monotherapy")) %>%
+  arrange(-sig_inflam, type, Combination, -cor) %>%
+  filter(sig_inflam|p.adj.signif!="ns")
+
+write.csv(x, "output/oshu_genesig_drugresp.csv", row.names = F)
+```
+
+# plot
+
+```{r}
+oshu <- readRDS("output/rds/oshu_seurat_obj.rds")
+sampleinfo <- read.csv("data/oshu/rnaseq_sampleinfo.csv", check.names = F)
+
+## for heatmaps
+drug_resp <- oshu@meta.data [,c(279, 78:270)]
+colnames(drug_resp)<- c("cluster", listofnames[colnames(drug_resp)[-1] ])
+
+## overall median drug response
+drug_resp_med <- matrix(
+  matrixStats::colMedians(as.matrix(drug_resp[, -1]), na.rm = TRUE),
+  dimnames = list(colnames(drug_resp[, -1]), NULL)
+)
+```
+
+## fig 7a:
+```{r}
+## cluster-wise median drug response
+drug_resp_med_m <- drug_resp %>%
+  reframe(across(everything(), ~ median(.x, na.rm = TRUE)), .by = cluster) %>%
+  arrange(cluster) %>%
+  column_to_rownames("cluster") 
+
+drug_resp_med_m [is.na(drug_resp_med_m )] = NaN
+drug_resp_med_m  <- t(scale(drug_resp_med_m )) # converting to z scores
+drug_resp_med_m [rowSums(is.nan(drug_resp_med_m ))==6,] = 0 # converting rows with all NaN to 0
+
+## var: drug_resp_med_m, drug_resp_med
+pwc_ref <- read.csv("output/oshu_drug_cluster_posthoc_pwc_ref.csv")
+kw_res <- read.csv("output/oshu_drug_cluster_kw.csv")
+
+inflam <- pwc_ref %>%
+  filter(p.adj.signif != "ns", type=="drug combination") %>%
+  distinct(Combination) %>%
+  pull(Combination)
+
+inflam <- kw_res [kw_res$Combination %in% inflam,]
+
+## p signif 
+label_mat <- pwc_ref %>%
+  filter(p.adj.signif != "ns", type == "drug combination") %>%
+  select(Combination, group2, p.adj.signif) %>%
+  tidyr::pivot_wider(names_from = group2, values_from = p.adj.signif, values_fill = "") %>%
+  column_to_rownames("Combination")
+label_mat <- label_mat[inflam$Combination, as.character(1:6), drop = FALSE]
+
+##############################
+drug_resp2 <- drug_resp_med_m [inflam$Combination,] 
+
+column1 = 
+  HeatmapAnnotation(
+    "Cluster" = c(1:6),
+    col = list("Cluster" = setNames(color_list, nm = c(1:6))),
+    show_annotation_name = F,
+    simple_anno_size = unit(3.5, "mm"),
+    show_legend = F
+)
+
+## drug response matrix
+hm <- Heatmap(drug_resp2, rect_gp = gpar(col = "white"),
+        column_title = "Cluster",
+        row_title = "", row_title_rot = 0,
+        show_row_names = T, show_column_names = T,
+        column_names_side = "top", column_names_rot = 0,
+        cluster_columns = T, cluster_rows = T,
+        row_labels = inflam$Combination,
+        name = "z score",
+        top_annotation = column1, 
+        na_col = "black",
+        cell_fun = function(j, i, x, y, width, height, fill) {
+          grid.text(label_mat[i, j], x, y, gp = gpar(fontsize = 8)) },
+        width = unit(6, "cm"), height = unit(0.5*nrow(drug_resp2), "cm")
+        )
+
+m <- matrix(drug_resp_med[inflam$Combination,], nrow=nrow(inflam), ncol=1 )
+
+resp <- Heatmap(m, cluster_rows=F, cluster_columns=F,
+        rect_gp = gpar(col = "white"), 
+        show_column_names=F, 
+        row_labels = stringr::str_trunc(inflam$Combination, width=35),
+        name="median DSS",
+        colorRamp2(c(0.2, 0.8), c("white", "seagreen")),
+        cell_fun = function(j, i, x, y, width, height, fill) {
+          grid.text(sprintf("%.2f", m[i, j]), x, y, gp = gpar(fontsize = 8)) },
+       width = unit(0.7, "cm"), height = unit(0.5*nrow(drug_resp2), "cm")
+       )
+
+# png("plot/fig7/main_7a_hm_diffcombi.png", units="cm", width=16, height=0.5*nrow(drug_resp2)+3, res=600, family = "Arial", bg = "transparent")
+Cairo::CairoPDF("plot/fig7/main_7a_diffcombi.pdf", width = 16/2.54, height = (0.5*nrow(drug_resp2)+3)/2.54, bg = "transparent", family = "Arial")
+ComplexHeatmap::draw(hm + resp, background = "transparent")
+dev.off()
+```
+
+## fig 7b:
+
+```{r}
+df <- read.csv("output/oshu_drug_cluster_wilcox_inflam.csv") %>%
+  filter(type == "drug combination") %>%
+  mutate(label = ifelse(p < 0.05 & magnitude != "small", Combination, ""),
+         color = ifelse(p > 0.05, "NS", ifelse(estimate>0, "positive", "negative")),
+         label = gsub(" - ", " -\n", label)
+         ) 
+
+p <- ggplot(df, aes(x = estimate, y = -log10(p), color = color)) +
+  geom_point(aes(size = effsize), alpha = .8) +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed") +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  geom_text_repel(data=df[df$estimate >0,], aes(label = label), 
+                  size = 3, xlim = c(0, 0.4), nudge_y = 0.5, force = 2,
+                  max.overlaps = Inf, min.segment.length = 0,
+                  lineheight = 0.7
+                  ) +
+  geom_text_repel(data=df[df$estimate <0,], aes(label = label), 
+                  size = 3, xlim = c(-0.4, 0),  force = 2,
+                  min.segment.length = 0, lineheight = 0.7
+                  ) +
+  labs(x =expression(atop("Difference in median DSS",
+                     "(Inflammatory"^{"high"} - "Inflammatory"^{"low"}~")")),
+       y = expression("-"~log[10](p~" value"))
+       ) +
+  xlim(c(-0.4, 0.4)) +
+  scale_radius(range = c(0.1, 4), breaks = c(0, 0.3, 0.5)) +
+  scale_color_manual(values = c("darkblue", "grey", "firebrick"), guide = "none") +
+  theme_pubr() +
+  theme(aspect.ratio = 0.7, legend.position = "right") +
+  theme_pdf
+
+ggsave(plot = p, "plot/fig7/main_7b_scatterplot_inflam_diffcombi.png", units = "in", width = 6, height = 5, dpi = 600)
+ggsave(plot = p,"plot/fig7/main_7b_scatterplot_inflam_diffcombi.pdf", units = "in", width = 6, height = 5, bg = "transparent", device = cairo_pdf)
+```
+
+
+## fig 7c:
+```{r}
+df <- read.csv("output/oshu_genesig_drugresp.csv") %>%
+  filter(sig_inflam)
+
+sig.cor <- unique(df$Combination)
+
+mean_dr <- as.matrix(drug_resp_med[sig.cor,])
+
+## matrix
+mat <- reshape2::acast(Group ~ Combination, value.var="cor", data=df)
+mat <- mat[c("LSPC.Quiescent", "LSPC.Primed.Top100", "LSPC.Cycle.Top100", "GMP.like.Top100", "ProMono.like.Top100", "Mono.like.Top100", "cDC.like.Top100", "inflammatory_sig_genes"), sig.cor ]
+
+rownames(mat) <- c("LSPC-Quiescent", "LSPC-Primed", "LSPC-Cycle", "GMP-like", "ProMono-like", "Mono-like", "cDC-like", "Inflammatory")
+
+p.mat <- reshape2::acast(Group ~ Combination, value.var="p.adj.signif", data=df)
+p.mat <- p.mat[c("LSPC.Quiescent", "LSPC.Primed.Top100", "LSPC.Cycle.Top100", "GMP.like.Top100", "ProMono.like.Top100", "Mono.like.Top100", "cDC.like.Top100", "inflammatory_sig_genes"), sig.cor ]
+p.mat[p.mat == "ns"] <- ""
+
+## heatmap
+hm <- Heatmap(t(mat), cluster_rows=T, cluster_columns=F, show_row_dend = F,
+  col=circlize::colorRamp2(breaks=c(-.7, 0, .7), colors=c("blue", "white","red")),
+  rect_gp = gpar(col = "grey", lwd=.5), border=T, 
+  name="Correlation", 
+  
+  column_split = c(rep(1,7), 2), column_title = NULL, 
+  column_names_rot = 45, column_names_gp=gpar( fontsize=8), 
+  
+  show_row_names=T, row_title=NULL, row_split = !grepl(" - ", sig.cor), 
+  cluster_row_slices = F, row_names_gp=gpar( fontsize=8),
+  
+  cell_fun = function(j, i, x, y, width, height, fill) {
+    grid.text(paste0(p.mat[j, i]), x, y, gp = gpar(fontsize = 6))
+  },
+  width = unit(1.4,"in"), 
+  heatmap_legend_param = list(title_gp = gpar(fontsize = 8, fontface = "bold"), 
+                              labels_gp = gpar(fontsize = 8), legend_height = unit(1.5,"cm") )
+)
+
+resp <- Heatmap(mean_dr, cluster_rows=F, cluster_columns=F,
+  rect_gp = gpar(col = "grey20", lwd=.5), border=T,
+  name="Median DSS", colorRamp2(c(0.2, 0.8), c("white", "seagreen")),
+  column_names_gp=gpar(fontsize=8), row_names_gp=gpar( fontsize=8), 
+  cell_fun = function(j, i, x, y, width, height, fill) {
+    grid.text(sprintf("%.2f", mean_dr[i, j]), x, y, gp = gpar(fontsize = 5))
+  },
+  width = unit(.2,"in"), 
+  heatmap_legend_param = list(title_gp = gpar(fontsize = 8, fontface = "bold"), 
+                              labels_gp = gpar(fontsize = 8), legend_height = unit(1.5,"cm") )
+)
+
+ht_list = hm + resp
+
+png("plot/fig7/main_7c_hm_genesig_cor.png", units="in", width=5, height=6.5, res=600, family = "Arial", bg = "transparent")
+# Cairo::CairoPDF("plot/fig7/main_7c_hm_genesig_cor.pdf", width=5, height=6.5, bg = "transparent", family = "Arial")
+draw(ht_list, merge_legends = T, background = "transparent")
+```
+
+
+# sessioninfo
+```{r}
+sessionInfo()
+```

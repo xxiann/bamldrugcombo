@@ -16,10 +16,10 @@ annotate_drug_classes <- function(dataset, drug_detail, match_col) {
   drug_class_pairs <- combined %>%
     transmute(
       Drug_Class1, Drug_Class2,
-      Label = paste(pmin(Drug_Class1, Drug_Class2), "-", pmax(Drug_Class1, Drug_Class2))
+      Label = paste(pmin(Drug_Class1, Drug_Class2), "-", pmax(Drug_Class1, Drug_Class2)) # change name
     )
   
-  drug_class_counts <- count(drug_class_pairs, Label, name = "Count") %>%
+  drug_class_counts <- dplyr::count(drug_class_pairs, Label, name = "Count") %>%
     arrange(desc(Count))
   
   list(combined, drug_class_counts, drug_class_pairs)
@@ -198,6 +198,13 @@ run_msigdb <- function(tmp, ensbl.col="gene",
 # # assign them to the factoextra namespace
 # environment(as_tidy_cor) <- asNamespace("rstatix")
 # assignInNamespace("as_tidy_cor",as_tidy_cor,"rstatix")
+
+r_squared <- function(y_val, y_pred) {
+  ss_res <- sum((y_val - y_pred)^2)
+  ss_tot <- sum((y_val - mean(y_val))^2)
+  1 - (ss_res / ss_tot)
+}
+
 
 ####### gene signature ########
 
