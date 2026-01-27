@@ -1,5 +1,5 @@
 ---
-title: "Association between genomic/clinical data and drug response ()"
+title: "Association between genomic/clinical data and drug response (Fig 4 + SuppFig 5)"
 description: "catboost between 101 features and 170 combinations & statistial associations"
 Date: "3 jan 2025"
 output: 
@@ -467,7 +467,7 @@ df <- rbind(stable_feature_sum, unstable_feature_sum) %>%
 write.csv(df, "output/all_feature_summary_df.csv", row.names = F)
 ```
 
-## tbl 10b: shap vs feature value
+## tbl 10b: shap vs feature value (SHAP value - contribution of each features at sample level)
 - for beeswarm plot
 - combining
   - for each combination

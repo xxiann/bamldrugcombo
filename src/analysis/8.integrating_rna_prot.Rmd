@@ -105,11 +105,12 @@ protein <- data.frame(Gene = x,
                       pvalue = proteomics$pvalue,
                       FDR = proteomics$FDR)
 
+## saving outcomes
 write.csv(transcript, "output/supp/inflam_DEG_transcript.csv", row.names = F)
 write.csv(protein, "output/supp/inflam_DEG_protein.csv", row.names = F)
 ```
 
-# tbl 23: integrating the outcomes together
+# tbl 23: integrating the DEG of transcript and protein together
 ```{r}
 corr_df <- read.csv("output/oshu_corr_global_prot_rna_per_gene.csv")
 transcript <- read.csv("output/supp/inflam_DEG_transcript.csv")

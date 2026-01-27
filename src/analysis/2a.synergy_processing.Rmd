@@ -91,7 +91,7 @@ HSA_eval <- rbindlist(
   })
 )
 
-# save(HSA_eval, file="output/synergy/HSA_eval.RData")
+# save(HSA_eval, file="output/supp/synergy/HSA_eval.RData")
 ```
 
 ```{r}
@@ -159,9 +159,9 @@ HSA_eval <- rbindlist(
 # Excess_hsa_list$excess_hsa = apply(Excess_hsa_list[,3:9], MARGIN = 1, FUN = function(x) median(x, na.rm=T))
 # 
 # 
-# save(HSA_ref_list, file="output/synergy/HSA_ref_list.RData")
-# save(HSA_CI_list, file="output/synergy/HSA_CI_list.RData")
-# save(Excess_hsa_list, file="output/synergy/Excess_hsa_list.RData")
+# save(HSA_ref_list, file="output/supp/synergy/HSA_ref_list.RData")
+# save(HSA_CI_list, file="output/supp/synergy/HSA_CI_list.RData")
+# save(Excess_hsa_list, file="output/supp/synergy/Excess_hsa_list.RData")
 ```
 
 
@@ -239,9 +239,9 @@ Excess_bliss_list = rbindlist(Excess_bliss_list, idcol=TRUE) %>%
 Excess_bliss_list$excess_bliss = apply(Excess_bliss_list[,3:9], MARGIN = 1, FUN = function(x) median(x, na.rm=T))
 
 
-save(Bliss_ref_list, file="output/supp/Bliss_ref_list.RData")
-save(Bliss_CI_list, file="output/supp/Bliss_CI_list.RData")
-save(Excess_bliss_list, file="output/supp/Excess_bliss_list.RData")
+save(Bliss_ref_list, file="output/supp/synergy/Bliss_ref_list.RData")
+save(Bliss_CI_list, file="output/supp/synergy/Bliss_CI_list.RData")
+save(Excess_bliss_list, file="output/supp/synergy/Excess_bliss_list.RData")
 ```
 
 
@@ -327,8 +327,8 @@ colnames(Excess_loewe_list) <- c("Combination", "Sample_ID",paste0("Conc_", 1:7)
 Excess_loewe_list <- inner_join(Excess_loewe_list, HSA_eval[,c(1,4,5)], by=c("Combination", "Sample_ID"))
 Excess_loewe_list$excess_loewe = apply(Excess_loewe_list[,3:9], MARGIN = 1, FUN = function(x) median(x, na.rm=T))
 
-save(Loewe_ref_list, file="output/supp/Loewe_ref_list.RData")
-save(Loewe_CI_list, file="output/supp/Loewe_CI_list.RData")
-save(Excess_loewe_list, file="output/supp/Excess_loewe_list.RData")
+save(Loewe_ref_list, file="output/supp/synergy/Loewe_ref_list.RData")
+save(Loewe_CI_list, file="output/supp/synergy/Loewe_CI_list.RData")
+save(Excess_loewe_list, file="output/supp/synergy/Excess_loewe_list.RData")
 
 ```

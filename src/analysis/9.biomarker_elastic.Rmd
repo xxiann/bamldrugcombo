@@ -358,14 +358,14 @@ png("plot/fig7/main_7e_elasticnet_hm.png", width = 0.15*nrow(mat) + 5, height = 
 ComplexHeatmap::draw(hm, merge_legends = T, background = "transparent")
 ```
 
-## VenAza 
+# VenAza 
 ```{r}
 selected <- results[["Azacitidine...Venetoclax"]]
 model <- selected$model
 selected_coef <- selected$coefs %>% left_join(biomarker[4:5], by=c("feature"="gene")) 
 ```
 
-### suppfig 8a: elastic net for reference therapy
+## suppfig 8a: elastic net for reference therapy
 ```{r}
 df <- data.frame("Observed_DSS" = selected$y_val, "Predicted_DSS" = selected$y_pred)
 
@@ -378,7 +378,7 @@ ggsave(plot = p, "plot/suppfig8/supp_8_elasticnet_venaza.png", dpi=600, width = 
 ggsave(plot = p, "plot/suppfig8/supp_8_elasticnet_venaza.pdf", width = 5, height = 5, bg = "transparent", device = cairo_pdf)
 ```
 
-### suppfig 8b: correlation between selected biomarkers on proteomics levels
+## suppfig 8b: correlation between selected biomarkers on proteomics levels
 
 ```{r}
 ## protein 
@@ -427,7 +427,7 @@ ggsave(plot = p, "plot/suppfig8/supp_8b_venaza_prot.png", width = 9, height = 6,
 ggsave(plot = p, "plot/suppfig8/supp_8b_venaza_prot.pdf", width = 9, height = 6, bg = "transparent", device = cairo_pdf)
 ```
 
-### fig 7b: clinical relevance - heatmap of gene expressions of biomarkers
+## fig 7b: clinical relevance - heatmap of gene expressions of biomarkers
 ```{r}
 ## clinical response
 temp <- read.csv("data/oshu/oshu_clinical_outcome_venaza.csv") %>%
