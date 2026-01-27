@@ -549,7 +549,7 @@ ComplexHeatmap::draw(hm, background = "transparent")
 dev.off()
 ```
 
-# combination ratio/index
+# combination ratio/index of each combination
 
 ```{r}
 ## calculating CR at samples levels using HSA/IDA prinicple

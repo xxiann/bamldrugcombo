@@ -269,7 +269,7 @@ ggsave(plot = p, "plot/fig3/main_3c_scatterplot_PvA.png", width = 26, height = 2
 ggsave(plot = p, "plot/fig3/main_3c_scatterplot_PvA.pdf", width = 26, height = 24, units = "cm", bg = "transparent", device = cairo_pdf)
 ```
 
-## supp fig 3a
+## supp fig 3a: evaluating outliers - standardised residual vs fitted
 ```{r}
 # variable - actual
 
@@ -331,7 +331,7 @@ ggsave(plot=p, "plot/suppfig3/supp_3a_scatterplot_eval.png", units = "cm", width
 ggsave(plot=p, "plot/suppfig3/supp_3a_scatterplot_eval.pdf", units = "cm", width = 13, height = 26, bg = "transparent", device = cairo_pdf)
 ```
 
-## supp fig 3b 
+## supp fig 3b: evaluating outliers looking at idacomboscore
 - 112 combinations with values observed idacomboscore
 ```{r }
 # variable - actual
@@ -635,7 +635,7 @@ p <- rbind(baml, fp) %>%
 ggsave(plot = p, "plot/fig3/main_3g_ridgeplot_toppredapproved.png", units="in", width=8, height=5, dpi=600, bg = "transparent")
 ggsave(plot = p, "plot/fig3/main_3g_ridgeplot_toppredapproved.pdf", units="in", width=8, height=5, bg = "transparent", device = cairo_pdf)
 ```
-## suppfig 4a (left)
+## suppfig 4a (left): venn diagram overlap between BAML and BAMLDrugCombo
 
 ```{r message=FALSE}
 venn.diagram(
@@ -675,7 +675,7 @@ venn.diagram(
 ```
 
 
-## suppfig 4a (right)
+## suppfig 4a (right): correlation between overlapping combinations (n=80)
 ```{r}
 p <- actual %>%
   dplyr::select(Combination, Actual_s_dss) %>%
@@ -695,7 +695,7 @@ ggsave(plot = p, "plot/suppfig4/supp_4a_scatterplot_PvA_baml.png", width = 9, he
 ggsave(plot = p, "plot/suppfig4/supp_4a_scatterplot_PvA_baml.pdf", width = 9, height = 9, units = "cm", bg = "transparent", device = cairo_pdf)
 ```
 
-## suppfig 4c
+## suppfig 4c: top monotherapy (ranked by median DSS of the monotherapy)
 ```{r}
 # variable - baml_drugdet, baml_mono
 drugclassdet <- setNames(baml_drugdet$Drug_Class, baml_drugdet$Chemical_compound)
@@ -733,7 +733,7 @@ ggsave(plot = p, "plot/suppfig4/supp_4c_pointrange_topmono_baml.png", width = 9,
 ggsave(plot = p, "plot/suppfig4/supp_4c_pointrange_topmono_baml.pdf", width = 9, height = 4, units = "in", bg = "transparent", device = cairo_pdf)
 ```
 
-## suppfig 4b + 4e
+## suppfig 4b + 4e: dss distribution of BAML and FPMTB-MCM mean DSS
 ```{r}
 ## BAML
 temp <- data.frame(Group="Monotherapy", Value=baml_mono$s_dss, Chemical_compound=baml_mono$Chemical_compound) %>%
@@ -787,7 +787,7 @@ ggsave(plot = p, "plot/suppfig4/supp_4be_ridgeplot_dssdist.png", width = 5, heig
 ggsave(plot = p, "plot/suppfig4/supp_4be_ridgeplot_dssdist.pdf", width = 5, height = 5, units = "in", bg = "transparent", device = cairo_pdf)
 ```
 
-## suppfig 4e
+## suppfig 4e: correlation between common predicted combinations
 ```{r}
 p <- bamlfp_output %>%
   ggscatter(., x="Mean_Combo_s_dss.baml",
@@ -806,7 +806,7 @@ ggsave(plot = p, "plot/suppfig4/supp_4f_scatterplot_bamlfp.png", width = 9, heig
 ggsave(plot = p, "plot/suppfig4/supp_4f_scatterplot_bamlfp.pdf", width = 9, height = 9, units = "cm", bg = "transparent", device = cairo_pdf)
 ```
 
-## suppfig 4f
+## suppfig 4f: approval status of combinations
 ```{r}
 summary_df <- bamlfp_output %>%
   filter(!is.na(category), category != "none") %>%

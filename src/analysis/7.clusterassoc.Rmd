@@ -275,7 +275,7 @@ drug_resp_med <- matrix(
 )
 ```
 
-## fig 7a:
+## fig 7a: heatmap for cluster-specific combination associations
 ```{r}
 ## cluster-wise median drug response
 drug_resp_med_m <- drug_resp %>%
@@ -353,7 +353,7 @@ ComplexHeatmap::draw(hm + resp, background = "transparent")
 dev.off()
 ```
 
-## fig 7b:
+## fig 7b: volcano plot of combinations associated with inflam groups
 
 ```{r}
 df <- read.csv("output/oshu_drug_cluster_wilcox_inflam.csv") %>%
@@ -392,7 +392,7 @@ ggsave(plot = p,"plot/fig7/main_7b_scatterplot_inflam_diffcombi.pdf", units = "i
 ```
 
 
-## fig 7c:
+## fig 7c: heatmap of correlation between gene signatures and DSS combinations
 ```{r}
 df <- read.csv("output/oshu_genesig_drugresp.csv") %>%
   filter(sig_inflam)
