@@ -1,6 +1,12 @@
 # BeatAML Drug Combo Manuscript
 
-Citation 
+Citation:
+> **Integrating drug combination landscapes with multiomics for acute myeloid leukemia** <br>
+> ***Xiao Xian Lin***, Christopher A. Eide, Stephen E. Kurtz, Elyse A. Olesinski, ***Shradha Garnaik***, Vedant Sandhu, Nicola Long, Rucha Ravi Kulkarni, Noor Rashidha Binte Meera Sahib, Melissa Ooi, Edward K. Chow, Jeffrey W. Tyner, Sanjukta Das, Shruti Bhatt
+
+Methylation analysis performed independently by our collaborator is provided in this repository: [DrDas-Lab/Methylation Analysis](https://github.com/DrDas-Lab/Methylation-Analysis)
+
+To reproduce the analyses and plots, please refer to our [Zenodo repository](https://doi.org/10.5281/zenodo.18409437) for data and output files referenced below.
 
 # Setup
 
@@ -67,7 +73,7 @@ Abbreviations for datasets involved
 | `src/function/colour.R` <br/> `src/function/scrna_colour.R` | Color codes used for plots |
 | `src/function/DSS_HelperFunctions.R` <br/> `src/function/DSS.R` | Codes taken from [yingjchen/DSS-v2.0](https://github.com/yingjchen/DSS-v2.0) <br/> Modified version that return QC |
 | `src/function/ida_predict.R` | Modified from [Alexander-Ling/IDACombo](https://github.com/Alexander-Ling/IDACombo) for use with DSS |
-| `src/function/ida_valid.R` | runs ida prediction, but also calculates the actual DSS, HR, IDAComboscore |
+| `src/function/ida_valid.R` | Runs ida prediction, but also calculates the actual DSS, HR, IDAComboscore |
 | `src/function/loading_data.R` | Standard parameters used for plots |
 | `src/function/plot.R` | Plot functions |
 | `src/function/functions.R` | Self-defined functions used in analysis |
@@ -79,7 +85,7 @@ R objects, python objects
 
 | Analysis/Code | Remarks | Files | Figures |
 | --- | --- | --- | --- |
-| `src/analysis/1.overview_combi.Rmd`  | sample demographics and cohort sample overlap are calculated not exported | Supp Tables <br/> `output/oshu_drug_mapping.csv` <br/> `output/oshu_drug_sens_correlation.csv` <br/> `output/oshu_combinationindex.csv` <br/> <br/> Other tables <br/> `output/supp/oshu_HSA_eval.csv` | Fig 1 <br/> SuppFig 1 <br/> Fig 2 <br/> SuppFig 2 |
+| `src/analysis/1.overview_combi.Rmd`  | Sample demographics and cohort sample overlap are calculated not exported | Supp Tables <br/> `output/oshu_drug_mapping.csv` <br/> `output/oshu_drug_sens_correlation.csv` <br/> `output/oshu_combinationindex.csv` <br/> <br/> Other tables <br/> `output/supp/oshu_HSA_eval.csv` | Fig 1 <br/> SuppFig 1 <br/> Fig 2 <br/> SuppFig 2 |
 | `src/analysis/2.predict_IDA.Rmd`  | Refer to `src/analysis/2a.synergy_calculation.Rmd` for calculation of Bliss and Loewe | Supp Tables <br/> `output/baml_IDA_prediction.csv` <br/> `output/combine_baml_fp_IDA_prediction.csv` <br/> Other tables <br/> `output/supp/baml_woOSHU_IDA_prediction.csv` <br/> `output/supp/fp_full_IDA_prediction.csv` <br/> `output/supp/fp_commondrug_IDA_prediction.csv` <br/> Other rds <br/> (folder) `output/supp/synergy/` | Figure 3 <br/> SuppFig 3 <br/> SuppFig 4 |
 | `src/analysis/3.catboost.Rmd`  | Refer to `src/analysis/catboost_py.ipynb` for codes modeling | Supp Tables <br/> `output/all_feature_summary_df.csv` <br/> `output/model_perf_summary_perfold.csv` <br/> `output/shap_summary_df.csv` <br/> `output/top_feature_summary_df.csv` <br/> `output/wilcox_pwc_combi.csv` <br/> `output/spear_numeric_combi.csv` <br/> Other tables <br/> (folder) `output/supp/ML/` <br/> <br/> Other rds <br/> `output/rds/cv_results_all170.pkl` | Figure 4 <br/> SuppFig 5 |
 | `src/analysis/4.RNA_clustering.Rmd`  | Refer to `src/preprocess/4.rnaseq_preprocess.Rmd` for VST normalization and cellular hierarchy gene signature calculation using PLAGE-like method | Supp Tables <br/> `output/oshu_GSEA_hall_cluster.csv` <br/> `output/oshu_GSEA_hall_gobp_cluster.csv` <br/> `output/oshu_GSEA_gobp_cluster.csv` <br/> Other rds <br/> `output/rds/oshu_cluster_info.rds` <br/> `output/rds/oshu_seurat_obj.rds` | Figure 5a-d <br/> SuppFig 6a-d |
