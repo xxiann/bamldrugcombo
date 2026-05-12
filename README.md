@@ -4,7 +4,7 @@ Citation:
 > **Integrating drug combination landscapes with multiomics for acute myeloid leukemia** <br>
 > ***Xiao Xian Lin***, Christopher A. Eide, Stephen E. Kurtz, Elyse A. Olesinski, ***Shradha Garnaik***, Vedant Sandhu, Nicola Long, Rucha Ravi Kulkarni, Noor Rashidha Binte Meera Sahib, Melissa Ooi, Edward K. Chow, Jeffrey W. Tyner, Sanjukta Das, Shruti Bhatt
 
-Methylation analysis performed independently by our collaborator is provided in this repository: [DrDas-Lab/Methylation Analysis](https://github.com/DrDas-Lab/Methylation-Analysis)
+Methylation analysis & Biomarker identification performed independently by our collaborator is provided in this repository: [DrDas-Lab/Methylation Analysis](https://github.com/DrDas-Lab/Methylation-Analysis)
 
 To reproduce the analyses and plots, please refer to our [Zenodo repository](https://doi.org/10.5281/zenodo.18409437) for data and output files referenced below.
 
